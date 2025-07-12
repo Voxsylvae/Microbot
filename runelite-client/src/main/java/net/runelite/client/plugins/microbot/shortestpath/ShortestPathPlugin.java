@@ -82,7 +82,7 @@ import java.util.regex.Pattern;
         alwaysOn = true
 )
 public class ShortestPathPlugin extends Plugin implements KeyListener {
-    protected static final String CONFIG_GROUP = "shortestpath";
+    public static final String CONFIG_GROUP = "shortestpath";
     private static final String PLUGIN_MESSAGE_PATH = "path";
     private static final String PLUGIN_MESSAGE_CLEAR = "clear";
     private static final String PLUGIN_MESSAGE_START = "start";
@@ -201,8 +201,7 @@ public class ShortestPathPlugin extends Plugin implements KeyListener {
         SplitFlagMap map = SplitFlagMap.fromResources();
         Map<WorldPoint, Set<Transport>> transports = Transport.loadAllFromResources();
         List<Restriction> restrictions = Restriction.loadAllFromResources();
-        pathfinderConfig = new PathfinderConfig(map, transports, restrictions, client, config);
-
+        pathfinderConfig = new PathfinderConfig(map, transports, restrictions, client, config);                        
         panel = injector.getInstance(ShortestPathPanel.class);
         final BufferedImage icon = ImageUtil.loadImageResource(ShortestPathPlugin.class, "panel_icon.png");
         navButton = NavigationButton.builder()
@@ -341,8 +340,7 @@ public class ShortestPathPlugin extends Plugin implements KeyListener {
                 overlayManager.remove(etaOverlayPanel);
             }
             return;
-        }
-
+        }              
         // Transport option changed; rerun pathfinding
         if (TRANSPORT_OPTIONS_REGEX.matcher(event.getKey()).find()) {
             if (pathfinder != null) {

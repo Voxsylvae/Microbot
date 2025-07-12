@@ -21,7 +21,7 @@ import net.runelite.client.plugins.microbot.util.cache.strategy.CacheOperations;
 import net.runelite.client.plugins.microbot.util.cache.strategy.CacheUpdateStrategy;
 import net.runelite.client.plugins.microbot.util.farming.SpiritTree;
 import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
-import net.runelite.client.plugins.microbot.util.poh.PohTeleports;
+import net.runelite.client.plugins.microbot.util.poh.Rs2PoH;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
 import java.util.Arrays;
@@ -125,7 +125,7 @@ public class SpiritTreeUpdateStrategy implements CacheUpdateStrategy<SpiritTree,
             updateFarmingStatesFromVarbits(cache);
         }
         if(varbitId == VarbitID.POH_SPIRIT_TREE_UPROOTED){
-            log.debug("TODO update cache for POH spirit tree uprooted varbit change,currently in POH? {} ",PohTeleports.isInHouse());
+            log.debug("TODO update cache for POH spirit tree uprooted varbit change,currently in POH? {} ",Rs2PoH.isInHouse());
         }
         if (Rs2Cache.isInPOH()) {
             log.debug("Player in POH, checking for spirit tree objects,changed varbit {}", varbitId);

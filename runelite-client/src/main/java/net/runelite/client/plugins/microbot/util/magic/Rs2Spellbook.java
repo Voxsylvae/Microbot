@@ -24,7 +24,7 @@ import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.npc.Rs2Npc;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
-import net.runelite.client.plugins.microbot.util.poh.PohTeleports;
+import net.runelite.client.plugins.microbot.util.poh.Rs2PoH;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 
 // TODO: Uncomment when implementing actual spellbook switching functionality
@@ -523,7 +523,7 @@ public enum Rs2Spellbook {
      */
     public static boolean canSwitchInPOH() {
         // Check if player is in their POH
-        if (!PohTeleports.isInHouse()) {
+        if (!Rs2PoH.isInHouse()) {
             return false;
         }
         

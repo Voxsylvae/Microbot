@@ -613,4 +613,30 @@ public interface ShortestPathConfig extends Config {
     default int maxSimilarTransportDistance() {
         return 0;
     }
+
+    @ConfigItem(
+            keyName = "walkWithPoHTransports",
+            name = "Walk with transports from PoH",
+            description = "Whether to consider Player-Owned House transportation options.<br>" +
+                    "This will evaluate routes that go through your POH (or Rimmington advertisement house).<br>" +
+                    "If 'Walk with banked transports' is enabled, it will consider: bank → required items → POH → transport → destination.<br>" +
+                    "Otherwise it will route directly from current position → POH → transport → destination.",
+            position = 5,
+            section = sectionDebug
+    )
+    default boolean walkWithPoHTransports() {
+        return false;
+    }
+
+    @ConfigItem(
+            keyName = "withAdvertisementHouse",
+            name = "Use advertisement house",
+            description = "Whether to use the advertisement house in Rimmington for PoH routing.<br>" +
+                    "This is useful if you don't have a PoH or want to use the advertisement house instead. Only works if 'Walk with PoH transports' is enabled.",
+            position = 6,
+            section = sectionDebug
+    )
+    default boolean withAdvertisementHouse() {
+        return false;
+    }
 }

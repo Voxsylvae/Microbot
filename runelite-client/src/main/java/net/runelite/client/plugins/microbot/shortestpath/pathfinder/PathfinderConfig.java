@@ -32,6 +32,8 @@ import net.runelite.client.plugins.microbot.util.magic.Rs2Magic;
 import net.runelite.client.plugins.microbot.util.magic.Rs2Spells;
 import net.runelite.client.plugins.microbot.util.magic.RuneFilter;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
+import net.runelite.client.plugins.microbot.util.poh.Rs2PoH;
+import net.runelite.client.plugins.microbot.util.poh.data.PoHTeleport;
 import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 
@@ -128,7 +130,12 @@ public class PathfinderConfig {
     @Setter
     // Used to include bank items when searching for item requirements
     private volatile boolean useBankItems = false;
-
+    @Getter
+    @Setter 
+    private volatile boolean includePoHTeleports = false;
+    @Getter
+    @Setter 
+    private volatile boolean assumeAdvertisementHouse = false;
     public PathfinderConfig(SplitFlagMap mapData, Map<WorldPoint, Set<Transport>> transports,
                             List<Restriction> restrictions,
                             Client client, ShortestPathConfig config) {
@@ -176,7 +183,7 @@ public class PathfinderConfig {
         distanceBeforeUsingTeleport = ShortestPathPlugin.override("distanceBeforeUsingTeleports", config.distanceBeforeUsingTeleport());
 
         //START microbot variables
-        useNpcs = config.useNpcs();
+        useNpcs = config.useNpcs();       
         //END microbot variables
 
         if (GameState.LOGGED_IN.equals(client.getGameState())) {
@@ -458,6 +465,12 @@ public class PathfinderConfig {
 			log.debug("Transport ( O: {} D: {} ) requires varplayers {}", transport.getOrigin(), transport.getDestination(), transport.getVarplayers());
 			return false;
 		}
+        if (includePoHTeleports || assumeAdvertisementHouse) {
+            boolean useablePoHTransport = useablePoHTransport(transport);
+            if (useablePoHTransport){
+                return true;
+            }
+        }
         // If you don't have the required currency & amount for transport
         if (transport.getCurrencyAmount() > 0 
             && !Rs2Inventory.hasItemAmount(transport.getCurrencyName(), transport.getCurrencyAmount())
@@ -500,6 +513,30 @@ public class PathfinderConfig {
         
 
         return true;
+    }
+    private boolean useablePoHTransport(Transport transport){
+        PoHTeleport poHTeleport = PoHTeleport.fromTransport(transport);
+        if (poHTeleport == null) return false;
+        int teleportHouseTabletItemID = -1;
+        boolean hasHomeTeleportTablet = Rs2Equipment.isWearing(teleportHouseTabletItemID) || Rs2Inventory.hasItem(teleportHouseTabletItemID) || (ShortestPathPlugin.getPathfinderConfig().useBankItems && Rs2Bank.hasItem(teleportHouseTabletItemID));
+        RuneFilter houseTelePortRuneFileter = RuneFilter.builder().
+                                            includeBank(ShortestPathPlugin.getPathfinderConfig().useBankItems).
+                                            includeRunePouch(Rs2Inventory.hasRunePouch()).build();
+        boolean hasHouseTeleportSpell = Rs2Magic.hasRequiredRunes(Rs2Spells.TELEPORT_TO_HOUSE, 1,houseTelePortRuneFileter);
+         // If the transport is a PoH teleport, check if the player has a house
+         if (assumeAdvertisementHouse){
+            return hasHomeTeleportTablet || hasHouseTeleportSpell;
+         }else if (includePoHTeleports){ 
+            boolean playerHasTransportAvilableInPoH = Rs2PoH.isTeleportAvailable(poHTeleport);
+            if (playerHasTransportAvilableInPoH) {
+                // If the player has the transport in House and a teleport to the House is available, return true
+                return hasHomeTeleportTablet || hasHouseTeleportSpell;
+            }
+            // for now return false, we must check the varbit of the player's house
+         }
+         return false;
+           
+            
     }
 
     /** Checks if the player has all the required skill levels for the transport */

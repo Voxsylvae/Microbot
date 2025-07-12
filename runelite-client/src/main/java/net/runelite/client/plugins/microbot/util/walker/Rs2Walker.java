@@ -1,8 +1,36 @@
 package net.runelite.client.plugins.microbot.util.walker;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import static net.runelite.client.plugins.microbot.util.Global.sleep;
+import static net.runelite.client.plugins.microbot.util.Global.sleepGaussian;
+import static net.runelite.client.plugins.microbot.util.Global.sleepUntil;
+import static net.runelite.client.plugins.microbot.util.Global.sleepUntilTrue;
+
+import java.awt.Rectangle;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
+import javax.inject.Named;
+
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.EquipmentInventorySlot;
@@ -12,28 +40,29 @@ import net.runelite.api.MenuAction;
 import net.runelite.api.ObjectComposition;
 import net.runelite.api.Perspective;
 import net.runelite.api.Player;
+import net.runelite.api.gameval.ItemID;
+import net.runelite.api.gameval.NpcID;
+import net.runelite.api.gameval.ObjectID;
 import net.runelite.api.Point;
 import net.runelite.api.Skill;
 import net.runelite.api.Tile;
 import net.runelite.api.TileObject;
+import net.runelite.api.Varbits;
 import net.runelite.api.WallObject;
 import net.runelite.api.annotations.Component;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldArea;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.InterfaceID;
-import net.runelite.api.gameval.ItemID;
-import net.runelite.api.gameval.NpcID;
-import net.runelite.api.gameval.ObjectID;
 import net.runelite.api.gameval.VarbitID;
-import net.runelite.api.widgets.ComponentID;
 import net.runelite.api.widgets.Widget;
+import net.runelite.api.widgets.ComponentID;
 import net.runelite.client.plugins.devtools.MovementFlag;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
-
 import net.runelite.client.plugins.microbot.shortestpath.ShortestPathConfig;
 import net.runelite.client.plugins.microbot.shortestpath.ShortestPathPlugin;
+import net.runelite.client.plugins.microbot.shortestpath.TeleportationItem;
 import net.runelite.client.plugins.microbot.shortestpath.Transport;
 import net.runelite.client.plugins.microbot.shortestpath.TransportType;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.Pathfinder;
@@ -51,6 +80,7 @@ import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.magic.Rs2Magic;
 import net.runelite.client.plugins.microbot.util.magic.Rs2Spells;
+import net.runelite.client.plugins.microbot.util.magic.RuneFilter;
 import net.runelite.client.plugins.microbot.util.magic.Runes;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
@@ -59,6 +89,12 @@ import net.runelite.client.plugins.microbot.util.npc.Rs2Npc;
 import net.runelite.client.plugins.microbot.util.npc.Rs2NpcModel;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.player.Rs2Pvp;
+import net.runelite.client.plugins.microbot.util.poh.Rs2AchievementGallery;
+import net.runelite.client.plugins.microbot.util.poh.Rs2PoH;
+import net.runelite.client.plugins.microbot.util.poh.Rs2PortalNexus;
+import net.runelite.client.plugins.microbot.util.poh.data.PoHTeleport;
+import net.runelite.client.plugins.microbot.util.poh.data.Rs2PoHPortal;
+import net.runelite.client.plugins.microbot.util.poh.navigation.Rs2PoHNavigation;
 import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
@@ -117,8 +153,9 @@ public class Rs2Walker {
     }
     public static WalkerState walkWithState(WorldPoint target, int distance) {
         boolean walkWithBankedTransports = config.walkWithBankedTransports();
-        if (walkWithBankedTransports){
-            return walkWithBankedTransportsAndState(target, distance,false);
+        boolean walkWithPoH  = config.walkWithPoHTransports();
+        if (walkWithBankedTransports || walkWithPoH){
+            return walkWithStateAndFeatures(target, distance);
         }else {
             return walkWithStateInternal(target, distance);
         }
@@ -162,14 +199,11 @@ public class Rs2Walker {
          */
         return processWalk(target, distance);
     }
-
-    /**
-     * @param target
-     * @return
-     */
     public static WalkerState walkWithState(WorldPoint target) {
         return walkWithState(target, config.reachedDistance());
     }
+
+  
 
     /**
      * Core walk method contains all the logic to successfully walk to the destination
@@ -416,7 +450,7 @@ public class Rs2Walker {
 
         if(walkableInteractPoint != null && walkableInteractPoint.equals(Rs2Player.getWorldLocation()))
             return true;
-        return walkableInteractPoint != null ? walkTo(walkableInteractPoint) : walkTo(interactablePoints.get(0));
+        return walkableInteractPoint != null ? walkWithState(walkableInteractPoint,10)==WalkerState.ARRIVED : walkWithState(interactablePoints.get(0),10)==WalkerState.ARRIVED;
     }
 
     public static void walkNextToInstance(GameObject target) {
@@ -650,6 +684,9 @@ public class Rs2Walker {
         WorldArea objectArea = new WorldArea(destSouthWest, 8, 8);
         
         if (!pathArea.intersectsWith2D(objectArea)) {
+            log.error("Path does not reach \n\tdestination: " + destination + 
+                    "\n\tpath: start" + path.get(0)+ "\n\tpath: end" + path.get(path.size() - 1) +
+                    "\n\tpathArea distance to to objectArea: " + pathArea.distanceTo2D(objectArea));                    
             return Integer.MAX_VALUE;
         }
         return path.size();
@@ -909,7 +946,7 @@ public class Rs2Walker {
             }
         }
 
-        log.info("\n\nFound " + transportList.size() + " transports for path from " +
+        log.debug("\n\nFound " + transportList.size() + " transports for path from " +
                 path.get(0) + " to " + path.get(path.size() - 1));
         
         // Apply filtering and requirement setup if requested
@@ -1267,6 +1304,18 @@ public class Rs2Walker {
 		WorldPoint _currentTarget = currentTarget;
         Rs2Walker.setTarget(null);
         Rs2Walker.setTarget(_currentTarget);
+    
+    }
+    public static void recalculatePathWithoutPoHTransports(){                        
+        ShortestPathPlugin.getPathfinderConfig().setIncludePoHTeleports(false);
+        ShortestPathPlugin.getPathfinderConfig().setAssumeAdvertisementHouse(false);      
+        ShortestPathPlugin.getPathfinderConfig().refresh();
+        Rs2Walker.recalculatePath();  
+    }
+    public static void recalculatePathWithoutBankedItems(){                                
+        ShortestPathPlugin.getPathfinderConfig().setUseBankItems(false);
+        ShortestPathPlugin.getPathfinderConfig().refresh();
+        Rs2Walker.recalculatePath();  
     }
 
     /**
@@ -2599,7 +2648,7 @@ public class Rs2Walker {
             default:
                 return -1;
         }
-    }
+    }    
 
     /**
      * Checks if the specified item ID corresponds to a teleportation item.
@@ -2992,7 +3041,7 @@ public class Rs2Walker {
             Rs2Spells rs2Spell = Rs2Magic.getRs2Spell(displayInfo);
             if (rs2Spell == null) return runeRequirements;            
             // Get rune requirements and check for elemental runes that might be provided by staves
-            Map<Runes, Integer> requiredRunes = Rs2Magic.getRequiredRunes(rs2Spell,1,true);
+            Map<Runes, Integer> requiredRunes = Rs2Magic.getMissingRunes(rs2Spell,1,RuneFilter.builder().includeRunePouch(true).build());
             List<Runes> elementalRunes = rs2Spell.getElementalRunes();            
             log.debug("Spell '{}' requires {} runes, including {} elemental runes", 
                 spellName, requiredRunes.size(), elementalRunes.size());           
@@ -3075,7 +3124,9 @@ public class Rs2Walker {
         StringBuilder performanceLog = new StringBuilder();
         performanceLog.append("\n\t=== compareRoutes Performance Analysis ===\n");        
         if (target == null) {
-            return new TransportRouteAnalysis(new ArrayList<>(), null, null,new ArrayList<>(),new ArrayList<>(), "Target location is null");
+            return TransportRouteAnalysis.builder()
+                .analysis("Target location is null")
+                .build();
         }
         
         if (startPoint == null) {
@@ -3083,81 +3134,199 @@ public class Rs2Walker {
         }
         
         if (startPoint == null) {
-            return new TransportRouteAnalysis(new ArrayList<>(), null, null, new ArrayList<>(),new ArrayList<>(),"Cannot determine starting location");
+            return TransportRouteAnalysis.builder()
+                .analysis("Cannot determine starting location")
+                .build();
         }
         
         try {
             // Get direct path distance with timing
-            performanceLog.append("\tStart Point: ").append(startPoint).append(", Target: ").append(target).append("\n");            
+            performanceLog.append("-Start Point:").append(startPoint).append("\n-Target: ").append(target).append("\n");
+            List<Transport> missingTransportDirectPath = new ArrayList<>();
             long directPathStartTime = System.nanoTime();
             List<WorldPoint> directPath = getWalkPath(startPoint, target);
+            
+            List<Transport> transportDirectPath =  getTransportsForPath(directPath, 0, TransportType.TELEPORTATION_ITEM, true);
+            
+            missingTransportDirectPath= getMissingTransports(transportDirectPath);
             long directPathEndTime = System.nanoTime();
             double directPathTimeMs = (directPathEndTime - directPathStartTime) / 1_000_000.0;
+      
             
-            int directDistance = getTotalTilesFromPath(directPath, target);
-            performanceLog.append("\t-Direct path calculation: ").append(String.format("%.2f ms", directPathTimeMs))
-                    .append(" (").append(directPath.size()).append(" waypoints, ").append(directDistance).append(" tiles)\n");
-            
+           
             // Find nearest bank and calculate banking route distance
+            int directDistance = getTotalTilesFromPath(directPath, target); // dircet route distance
+            log.info("tiles directPath");
+            int bankingRouteDistance = Integer.MAX_VALUE; // distance of the route from start to bank and with banked items from the banke to target
+            int POHRouteDistanceWithOutBanking = Integer.MAX_VALUE; // distance of the route from start to PoH portal and with PoH transport to target without considering bankeded items
+            int PoHRouteDistanceWithBank = Integer.MAX_VALUE; // distance 
+            
+            
             BankLocation nearestBank = null;
-            List<WorldPoint> pathToBank  = new ArrayList<>();
-            List<WorldPoint> pathWithBankedItemsToTarget = new ArrayList<>();
-            int bankingRouteDistance = -1;            
+            List<WorldPoint> pathFromStartToBank  = new ArrayList<>();
+            List<WorldPoint> pathFromStartToTargetWithBankedItems = new ArrayList<>();
+            List<WorldPoint> pathFromBankToTarget = new ArrayList<>();
             
-            try {
-                
+            List<WorldPoint> pathFromStartToPoH = new ArrayList<>();
+            int fromStartToPoHDistance = Integer.MAX_VALUE; // Initialize to max value for comparison
+            List<WorldPoint> pathFromStartToPoHWithBankedItems = new ArrayList<>();
+            int fromStartToPoHWithBankedItemsDistance = Integer.MAX_VALUE; // Initialize to max value for comparison
+            List<WorldPoint> pathFromBankToPoH = new ArrayList<>();
+            int fromBankToPoHDistance = Integer.MAX_VALUE; // Initialize to max value for comparison
+            List<WorldPoint> pathFromPoHTransportToTarget = new ArrayList<>();
+            int fromPoHTransportToTargetDistance = Integer.MAX_VALUE; // Initialize to max value for comparison
+            List<WorldPoint> pathFromPoHTransportToTargetWithBankedItems = new ArrayList<>();
+            int fromPoHTransportToTargetWithBankedItemsDistance = Integer.MAX_VALUE; //
+            List<WorldPoint> pathWithBankedItemsFromStartToTarget = new ArrayList<>();
+            List<WorldPoint> pathFromStartToTargetWithBankedItemsAndPoH = new ArrayList<>();
+            int PoHRouteDistance =Integer.MAX_VALUE; // Initialize to max value for comparison     
+            boolean walkWithBankItems = config.walkWithBankedTransports();
+            boolean walkWithPoHTransports  =  config.walkWithPoHTransports();
+            boolean useAdvertisementsPoH = config.withAdvertisementHouse();
+            performanceLog.append(" --Walking with banked items: ").append(walkWithBankItems).append("\n");
+            performanceLog.append(" --Walking with PoH transports: ").append(walkWithPoHTransports).append("\n");
+            performanceLog.append(" --Using advertisements for PoH: ").append(useAdvertisementsPoH).append("\n");
+            performanceLog.append(" --Direct path calculation:\n\t").append(String.format("%.2f ms", directPathTimeMs))
+                    .append(" (").append(directPath.size()).append(" waypoints, ").append(directDistance).append(" tiles)\n");
+            Rs2PoHPortal pohPortal = Rs2PoHPortal.UNKNOWN;
+            WorldPoint portalLocation = null;
+            PoHTeleport pohHTeleport = null;
+            Transport transportViaPoH = null;
+            List<Transport> missingTransportForBankToTarget = new ArrayList<>();
             
-             
-                
-                boolean originalUseBankItems = ShortestPathPlugin.getPathfinderConfig().isUseBankItems();
-                try {                            
-                    ShortestPathPlugin.getPathfinderConfig().setUseBankItems(true);
-                    ShortestPathPlugin.getPathfinderConfig().refresh(target);
-                    
-                    performanceLog.append("\t-Bank items available: ").append(Rs2Bank.bankItems().size()).append("\n");
-                    
-                    long pathWithBankedItemsStartTime = System.nanoTime();
-                    pathWithBankedItemsToTarget = getWalkPath(startPoint, target);
-                    long pathWithBankedItemsEndTime = System.nanoTime();
-                    double pathWithBankedItemsTimeMs = (pathWithBankedItemsEndTime - pathWithBankedItemsStartTime) / 1_000_000.0;
-                    
-                    int distanceWithBankedItemsToTarget = getTotalTilesFromPath(pathWithBankedItemsToTarget, target);
-                    bankingRouteDistance = distanceWithBankedItemsToTarget;
-                    
-                    performanceLog.append("\t-Path from start to target with banked items: ").append(String.format("%.2f ms", pathWithBankedItemsTimeMs))
-                            .append(" (").append(pathWithBankedItemsToTarget.size()).append(" waypoints, ").append(distanceWithBankedItemsToTarget).append(" tiles)\n");
-                    performanceLog.append("\t-Total banking route distance: ").append(bankingRouteDistance).append(" tiles\n");
-
-                } finally {
-                    // Always restore original configuration
-                    ShortestPathPlugin.getPathfinderConfig().setUseBankItems(false);
-                    ShortestPathPlugin.getPathfinderConfig().refresh();                        
+            List<Transport> missingTransportForStartToTargetWithBankedItemsAndPoH = new ArrayList<>();
+            List<Transport> missingTransportFromPOHToTargetWithBankedItems = new ArrayList<>();
+            List<Transport> missingTransportFromStartToPoH = new ArrayList<>();
+            if (walkWithPoHTransports){
+                if (useAdvertisementsPoH){
+                    pohPortal = Rs2PoHPortal.RIMMINGTON;
+                    portalLocation = Rs2PoHPortal.RIMMINGTON.getWorldPoint();
+                }else{
+                    pohPortal = Rs2PoHPortal.getPlayerHousePortal().get();
+                    portalLocation = Rs2PoHPortal.getPlayerHousePortalLocation();
                 }
-                if (bankingRouteDistance<directDistance){
+            }
+
+
+            try {
+                // when a we would take a route from start to target with transport to PoH, which would not considert PoH transport,
+                // these route would be included here, becasue pathfinder with banked items would consider a teleport to PoH portal wordlocation
+                PathAnalysisResult pathFromStartToTargetWithBankedItemsPathAnalysis = getWalkPathWithBankItemsAnalysis(startPoint, target);
+                log.info("tiles pathFromStartToTargetWithBankedItemsPathAnalysis");
+                pathFromStartToTargetWithBankedItems = pathFromStartToTargetWithBankedItemsPathAnalysis.getPath();
+                int fromStartToTargetWithBankedItemsDistance = pathFromStartToTargetWithBankedItemsPathAnalysis.getTotalTiles();
+                List<Transport> transportsForStartToTargetWithBankedItems = pathFromStartToTargetWithBankedItemsPathAnalysis.getTransports();
+                List<Transport> missingTransportForStartToTargetWithBankedItems = getMissingTransports(transportsForStartToTargetWithBankedItems);
+                performanceLog.append("Path Analysis Result start to target with banked items and PoH:\n"+pathFromStartToTargetWithBankedItemsPathAnalysis.getPerformanceDetails());
+                performanceLog.append("\t-Transports along the Path: ").append(pathFromStartToTargetWithBankedItemsPathAnalysis.getTransports().size()).append("\n");
+                pathFromStartToTargetWithBankedItemsPathAnalysis.getTransports().forEach(t -> performanceLog.append("\t\t-").append(t.toString()).append("\n"));
+                performanceLog.append("\t-Path from start to target with banked items: ").append(pathFromStartToTargetWithBankedItems.size())
+                            .append(" waypoints, ").append(fromStartToTargetWithBankedItemsDistance).append(" tiles\n");
+                if(walkWithPoHTransports){
+                    /** -- path analysis for from start to PoH portal location --  without using bankitems*/
+                    pathFromStartToPoH = getWalkPath(startPoint, portalLocation);                    
+                    fromStartToPoHDistance = getTotalTilesFromPath(pathFromStartToPoH, portalLocation);
+                    log.info(" tiles fromStartToPoHDistance");
+                    /** -- path analysis for from start to PoH portal location --  with using bankitems*/
+                    pathFromStartToPoHWithBankedItems = getWalkPathWithBankItems(startPoint, portalLocation);                    
+                    fromStartToPoHWithBankedItemsDistance = getTotalTilesFromPath(pathFromStartToPoHWithBankedItems, portalLocation);
+                    log.info(" tiles pathFromStartToPoHWithBankedItems");
+                    /** -- path analysis for from start to target-- with using bankeitems and poh teleports */
+                    pathFromStartToTargetWithBankedItemsAndPoH = getWalkPathWithPoHAndBankedItems(startPoint, target);
+                    int fromStartToTargetWithBankedItemsAndPoHDistance = getTotalTilesFromPath(pathFromStartToTargetWithBankedItemsAndPoH, target);
+                    log.info(" tiles pathFromStartToTargetWithBankedItemsAndPoH");
+                    List<Transport> transportsForStartToTargetWithBankedItemsAndPoH = getTransportsForPath(pathFromStartToTargetWithBankedItemsAndPoH, 0, TransportType.TELEPORTATION_ITEM, true);
+                    missingTransportForStartToTargetWithBankedItemsAndPoH = getMissingTransports(transportsForStartToTargetWithBankedItemsAndPoH);
+                    
+                    
+                    List<Transport> transportsAvilableInHouse = getTransportAvilabeInHouse(transportsForStartToTargetWithBankedItemsAndPoH);
+                    performanceLog.append("\t-Path from start to PoH ("+pohPortal.getName()+"): ").append(pathFromStartToPoH.size())
+                            .append(" waypoints, ").append(fromStartToPoHDistance).append(" tiles\n");
+                    
+                    performanceLog.append("\t-Path from start to PoH ("+pohPortal.getName()+") with banked items: "). append(pathFromStartToPoHWithBankedItems.size())
+                            .append(" waypoints, ").append(fromStartToPoHWithBankedItemsDistance).append(" tiles\n");
+                    
+                    
+                            performanceLog.append("\t-Path from start to target with PoH and banked items: ").append(pathFromStartToTargetWithBankedItemsAndPoH.size())
+                            .append(" waypoints, ").append(fromStartToTargetWithBankedItemsAndPoHDistance).append(" tiles\n");
+                    performanceLog.append("\t-Transports along the Path from start to target with banked items and PoH: ").append(transportsForStartToTargetWithBankedItemsAndPoH.size()).append("\n");
+                    transportsForStartToTargetWithBankedItemsAndPoH.forEach(t -> performanceLog.append("\t\t-").append(t.toString()).append("\n"));
+                    // add number of transports available in PoH for the path and number of all transports
+                    performanceLog.append("\t-Transports along the Path available in PoH: ").append(transportsAvilableInHouse.size()).append(" (total: ").append(transportsForStartToTargetWithBankedItemsAndPoH.size()).append(")\n");
+                    // add which transports are available in PoH
+                    transportsAvilableInHouse.forEach(t -> performanceLog.append("\t\t-").append(t.toString()).append("\n"));
+                    // if there are transports available in PoH, we can use them to teleport to target
+
+                    if(!transportsAvilableInHouse.isEmpty()){
+                        transportViaPoH = transportsAvilableInHouse.get(0);
+                        performanceLog.append("\t-Transport via PoH: ").append(transportViaPoH).append("\n");
+                    }
+                    if (transportViaPoH != null) {
+                        pohHTeleport = PoHTeleport.fromTransport(transportViaPoH);                             
+                        pathFromPoHTransportToTarget = getWalkPath(pohHTeleport.getLocation(), target);
+                        fromPoHTransportToTargetDistance = getTotalTilesFromPath(pathFromPoHTransportToTarget, target);
+                        log.info(" tiles fromPoHTransportToTargetDistance [{}]", fromPoHTransportToTargetDistance);
+                        POHRouteDistanceWithOutBanking = fromStartToPoHDistance + fromPoHTransportToTargetDistance;
+
+                        pathFromPoHTransportToTargetWithBankedItems = getWalkPathWithBankItems(pohHTeleport.getLocation(), portalLocation);
+                        // !!IMPORTANT must be calcaulted here ! becasue getTransportsForPath uses the last transport in the path-> last refreshed transport
+                        // so the transport loaded in  getWalkPath are used !!
+                        missingTransportFromPOHToTargetWithBankedItems = getMissingTransports(getTransportsForPath(pathFromPoHTransportToTargetWithBankedItems, 0, TransportType.TELEPORTATION_ITEM, true)); 
+                        fromPoHTransportToTargetWithBankedItemsDistance = getTotalTilesFromPath(pathFromPoHTransportToTargetWithBankedItems, target);
+                        log.info(" tiles fromPoHTransportToTargetWithBankedItemsDistance [{}]", fromPoHTransportToTargetWithBankedItemsDistance);
+                        
+                    }
+                }
+                if ( fromStartToTargetWithBankedItemsDistance < directDistance 
+                    || fromStartToPoHWithBankedItemsDistance < fromStartToPoHDistance 
+                    || fromPoHTransportToTargetWithBankedItemsDistance < fromPoHTransportToTargetDistance) {
                     long bankSearchStartTime = System.nanoTime();
                     nearestBank = Rs2Bank.getNearestBank(startPoint);
                     long bankSearchEndTime = System.nanoTime();
-                    double bankSearchTimeMs = (bankSearchEndTime - bankSearchStartTime) / 1_000_000.0;
-                    if (nearestBank != null) {
-                        performanceLog.append("\t-Nearest bank search: ").append(String.format("%.2f ms", bankSearchTimeMs));
-                        WorldPoint bankLocation = nearestBank.getWorldPoint();
-                        performanceLog.append("\t -> Found: ").append(nearestBank).append(" at ").append(bankLocation).append("\n");
-                    
-                        // Calculate distance from start point to bank
-                        long pathToBankStartTime = System.nanoTime();
-                        pathToBank = getWalkPath(startPoint, bankLocation);
-                        long pathToBankEndTime = System.nanoTime();
-                        double pathToBankTimeMs = (pathToBankEndTime - pathToBankStartTime) / 1_000_000.0;
-                        
-                        int distanceToBank = getTotalTilesFromPath(pathToBank, bankLocation);
-                        performanceLog.append("\t-Path to bank calculation: ").append(String.format("%.2f ms", pathToBankTimeMs))
-                                .append(" (").append(pathToBank.size()).append(" waypoints, ").append(distanceToBank).append(" tiles)\n");
-                        bankingRouteDistance += distanceToBank;
-                    } else {
-                        performanceLog.append("\t -> No accessible bank found\n");
-                    }
+                    double bankSearchTimeMs = (bankSearchEndTime - bankSearchStartTime) / 1_000_000.0;                    
+                    performanceLog.append("\t-Nearest bank search: ").append(String.format("%.2f ms", bankSearchTimeMs));
                 }
+                if (nearestBank != null) {                        
+                    WorldPoint bankLocation = nearestBank.getWorldPoint();
+                    performanceLog.append("\n\t\t -> Found:\n\t\t\t").append(nearestBank).append(" at ").append(bankLocation).append("\n");
                 
+                    // Calculate distance from start point to bank
+                    long pathToBankStartTime = System.nanoTime();
+                    pathFromStartToBank = getWalkPath(startPoint, bankLocation);
+                    long pathToBankEndTime = System.nanoTime();
+                    double pathToBankTimeMs = (pathToBankEndTime - pathToBankStartTime) / 1_000_000.0;
+                    
+                    int fromStartToBankDistance = getTotalTilesFromPath(pathFromStartToBank, bankLocation);
+                    log.info(" tiles fromStartToBankDistance [{}]", fromStartToBankDistance);
+                    performanceLog.append("\t-Path to bank calculation: ").append(String.format("%.2f ms", pathToBankTimeMs))
+                            .append(" (").append(pathFromStartToBank.size()).append(" waypoints, ").append(fromStartToBankDistance).append(" tiles)\n");
+
+                    pathFromBankToTarget = getWalkPathWithBankItems( bankLocation, target);
+                    int fromBankToTargetDistance = getTotalTilesFromPath(pathFromBankToTarget, target);
+                    log.info(" tiles pathFromBankToTarget [{}]", fromBankToTargetDistance);
+                    List<Transport> transportsFromBankToTarget = getTransportsForPath(pathFromBankToTarget, 0, TransportType.TELEPORTATION_ITEM, true);                
+                    missingTransportForBankToTarget = getMissingTransports(transportsFromBankToTarget);
+                    
+                    bankingRouteDistance = fromBankToTargetDistance + fromStartToBankDistance;
+
+                    if (portalLocation!=null && walkWithPoHTransports) {
+                        pathFromBankToPoH = getWalkPathWithBankItems(nearestBank.getWorldPoint(), portalLocation);
+                         // !!IMPORTANT must be calcaulted here ! becasue getTransportsForPath uses the last transport in the path-> last refreshed transport
+                        // so the transport loaded in  getWalkPathWithBankItems are used !!
+                        missingTransportFromStartToPoH = getMissingTransports(getTransportsForPath(pathFromBankToPoH, 0, TransportType.TELEPORTATION_ITEM, true)); 
+                        if(pathFromBankToPoH.size() != 0){
+                            int distanceFromBankToPoH = getTotalTilesFromPath(pathFromBankToPoH, portalLocation);
+                            log.info(" tiles distanceFromBankToPoH");
+                            performanceLog.append("\t-Path from bank to PoH: ").append(pathFromBankToPoH.size())
+                            .append(" waypoints, ").append(distanceFromBankToPoH).append(" tiles\n");
+                            PoHRouteDistanceWithBank = fromStartToBankDistance + distanceFromBankToPoH   + fromPoHTransportToTargetWithBankedItemsDistance;
+                        }else{
+                            pathFromBankToPoH = new ArrayList<>();
+                        }
+                    }
+                } else {
+                    performanceLog.append("\t -> No accessible bank found\n");
+                }                            
             } catch (Exception e) {
                 performanceLog.append("Banking route calculation failed: ").append(e.getMessage()).append("\n");
                 log.debug("Could not calculate banking route: " + e.getMessage());
@@ -3167,32 +3336,120 @@ public class Rs2Walker {
             double totalTimeMs = (totalEndTime - totalStartTime) / 1_000_000.0;
             performanceLog.append("\t=== Total compareRoutes time: ").append(String.format("%.2f ms", totalTimeMs)).append(" ===\n");
             
-            if (bankingRouteDistance == -1) {
+            if (bankingRouteDistance == Integer.MAX_VALUE || nearestBank == null) {
                 performanceLog.append("\tResult: Direct route only (banking route unavailable)\n");
                 log.info(performanceLog.toString());
-                return new TransportRouteAnalysis(directPath, null, null, new ArrayList<>(),new ArrayList<>(),
-                    "Direct route only (banking route unavailable)");
+                return TransportRouteAnalysis.builder()
+                    .directPath(directPath)
+                    .analysis("Direct route only (banking route unavailable)")
+                    .build();
             }
+            // we do not conpete the banking route and the PoH route, because we dont want to use items from the bank,
+            // so we always use the PoH when it is available and configured to be used
+            boolean directIsFaster = (directDistance <= bankingRouteDistance) && (directDistance < POHRouteDistanceWithOutBanking) 
+                    && (directDistance<PoHRouteDistanceWithBank);
+            boolean bankingRouteIsFaster = (bankingRouteDistance < directDistance);
+            boolean PoHRouteWitoutBankingIsFaster = (POHRouteDistanceWithOutBanking < directDistance) 
+                    && (POHRouteDistanceWithOutBanking<PoHRouteDistanceWithBank);
+            boolean PoHRouteWithBankingIsFaster = (PoHRouteDistanceWithBank < directDistance) 
+                    && (PoHRouteDistanceWithBank<POHRouteDistanceWithOutBanking);
+            StringBuilder recommendation = new StringBuilder();
+            if (directIsFaster) {
+                recommendation.append("\t--Direct route is faster\n");
+            } else if (PoHRouteWitoutBankingIsFaster) {
+                recommendation.append("\t--PoH route without banking is faster\n");
+            } else if (PoHRouteWithBankingIsFaster) {
+                recommendation.append("\t--PoH route with banking is faster\n");
+            } else if (bankingRouteIsFaster) {
+                assert PoHRouteDistanceWithBank == Integer.MAX_VALUE : "PoH route with banking should not be max value if we reached this point";
+                assert POHRouteDistanceWithOutBanking == Integer.MAX_VALUE : "PoH route without banking should not be max value if we reached this point";
+                recommendation.append("\t--Banking route is faster");
+            }else {
+                recommendation.append("No clear faster route found");
+            }
+            recommendation.append("\t--Direct distance: ").append(directDistance).append(" tiles\n");
+            recommendation.append("\t--Banking route distance: ").append(bankingRouteDistance).append(" tiles\n");
+            recommendation.append("\t--PoH route without banking distance: ").append(POHRouteDistanceWithOutBanking).append(" tiles\n");
+            recommendation.append("\t--PoH route with banking distance: ").append(PoHRouteDistanceWithBank).append(" tiles\n");
+            performanceLog.append("--Result: \n\t").append(recommendation).append("\n");
             
-            boolean directIsFaster = directDistance <= bankingRouteDistance;
-            String recommendation = directIsFaster ? 
-                String.format("\tDirect route is faster (%d vs %d tiles)", directDistance, bankingRouteDistance) :
-                String.format("\tBanking route is faster (%d vs %d tiles)", bankingRouteDistance, directDistance);
             
-            performanceLog.append("\tResult:\n\t\t ").append(recommendation).append("\n");
+
+            List<List<WorldPoint>> fastesRoutesSegments = new ArrayList<>();
+            List<Transport> transportsForDirectPath = getTransportsForPath(directPath, 0, TransportType.TELEPORTATION_ITEM, true);
+            List<Transport> missingTransports = new ArrayList<>();
+            if (directIsFaster) {
+                fastesRoutesSegments.add(directPath);
+                portalLocation = null;
+                pohHTeleport = null;
+                transportViaPoH = null;
+                nearestBank = null;
+            } else if(PoHRouteWitoutBankingIsFaster){
+                nearestBank = null;
+                fastesRoutesSegments.add(pathFromStartToPoH);
+                fastesRoutesSegments.add(pathFromPoHTransportToTarget);
+            }else if( PoHRouteWithBankingIsFaster) {                
+                
+                missingTransports.addAll(missingTransportFromPOHToTargetWithBankedItems);
+                missingTransports.addAll(missingTransportFromStartToPoH);
+                fastesRoutesSegments.add(pathFromStartToBank)   ;
+                fastesRoutesSegments.add(pathFromBankToPoH);
+                fastesRoutesSegments.add(pathFromPoHTransportToTargetWithBankedItems);
+                assert(transportViaPoH != null) : "Transport via PoH should not be null if we reached this point";
+                assert(nearestBank != null) : "Nearest bank should not be null if we reached this point";
+                assert(pohHTeleport != null) : "PoH teleport should not be null if we reached this point";
+            }else{
+                assert(bankingRouteIsFaster) : "Banking route should be faster if we reached this point";
+                log.info("Banking route is faster than direct or PoH routes");                                                
+                log.info("Missing transports for bank to target: {}", missingTransportForBankToTarget.size());
+                log.info("Missing transports for start to target: v2{}", missingTransportDirectPath.size());
+                
+                missingTransports.addAll(missingTransportForBankToTarget);
+                portalLocation = null;  
+                pohHTeleport = null;
+                transportViaPoH = null;
+                fastesRoutesSegments.add(pathFromStartToBank);
+                fastesRoutesSegments.add(pathFromBankToTarget);
+                
+            }
+            String tmp = String.format("Fastest route segments: %s", fastesRoutesSegments.stream()
+                .map(path -> String.format("%d waypoints, %d tiles", path.size(), getTotalTilesFromPath(path, target)))
+                .collect(Collectors.joining(" -> ")));
+            performanceLog.append(String.format("\n\tFound %d missing req. for transports to destination in the bank: %s\n", 
+                missingTransports.size(), target));
+            Map<Integer, Integer> missingItemsWithQuantities = getMissingTransportItemIdsWithQuantities(missingTransports);
+        
+            performanceLog.append(String.format("\n\tFor Found %d missing transports we found the %d missing items for destination: %s", 
+                missingTransports.size(), missingItemsWithQuantities.size(), target));
+
             log.info(performanceLog.toString());
             
-            return new TransportRouteAnalysis(directPath, 
-                nearestBank, nearestBank != null ? nearestBank.getWorldPoint() : null,pathToBank,pathWithBankedItemsToTarget, recommendation);
+            // Return complete TransportRouteAnalysis with all route information using builder pattern
+            return TransportRouteAnalysis.builder()
+                .directPath(directPath)
+                .nearestBank(nearestBank)
+                .bankLocation(nearestBank != null ? nearestBank.getWorldPoint() : null)
+                .pathToBank(pathFromStartToBank)
+                .pathFromBank(pathFromBankToTarget)
+                .pohPortalLocation(portalLocation)
+                .pathToPoH(pathFromStartToPoH)
+                .pathFromPoH(pathFromPoHTransportToTarget)
+                .pohTeleport(pohHTeleport)
+                .missingTransports(missingTransports)
+                .missingItemsWithQuantities(missingItemsWithQuantities)
+                .analysis(recommendation.toString())
+                .build();
                 
         } catch (Exception e) {
             long totalEndTime = System.nanoTime();
             double totalTimeMs = (totalEndTime - totalStartTime) / 1_000_000.0;
-            performanceLog.append("ERROR after ").append(String.format("%.2f ms", totalTimeMs)).append(": ").append(e.getMessage()).append("\n");
+            performanceLog.append("\nERROR after ").append(String.format("%.2f ms", totalTimeMs)).append(": ").append(e.getMessage()).append("\n");
             log.warn(performanceLog.toString());
             log.warn("Error comparing routes to " + target + ": " + e.getMessage());
             e.printStackTrace();
-            return new TransportRouteAnalysis(new ArrayList<>(), null, null,new ArrayList<>(),new ArrayList<>(), "Error calculating routes: " + e.getMessage());
+            return TransportRouteAnalysis.builder()
+                .analysis("Error calculating routes: " + e.getMessage())
+                .build();
         }
     }
     
@@ -3210,17 +3467,75 @@ public class Rs2Walker {
      * @param target The destination to travel to
      * @return true if travel was successful, false otherwise
      */
-    public static boolean walkWithBankedTransports(WorldPoint target) {
+    public static WalkerState walkWithBankedTransports(WorldPoint target) {
         return walkWithBankedTransports(target, false);
     }
-    public static boolean walkWithBankedTransports(WorldPoint target, boolean forceBanking) {
-        return walkWithBankedTransportsAndState(target, 10, forceBanking) == WalkerState.ARRIVED;
+    public static WalkerState walkWithBankedTransports(WorldPoint target, boolean forceBanking) {
+      return walkWithBankedTransports(target, 10, forceBanking);
     }
-    public static boolean walkWithBankedTransports(WorldPoint target, int distance, boolean forceBanking){
-        WalkerState state = walkWithBankedTransportsAndState(target, distance, forceBanking);
-        return state == WalkerState.ARRIVED;
-        
+    public static WalkerState walkWithBankedTransports(WorldPoint target, int distance, boolean forceBanking){
+        boolean originalwalkWithBankedTransport =config.walkWithBankedTransports();
+        boolean orignalwalkWithPoHTransport = config.walkWithPoHTransports();
+        boolean originalAdvertisementPoH = config.withAdvertisementHouse();
+        Microbot.getConfigManager().setConfiguration(
+                  ShortestPathPlugin.CONFIG_GROUP,
+                "walkWithBankedTransports",true
+                );
+        setShortPathFeatureConfig( true, orignalwalkWithPoHTransport, originalAdvertisementPoH);
+        WalkerState state = WalkerState.EXIT;
+        try {
+            state = walkWithStateAndFeatures(target, distance);
+        }finally {
+            setShortPathFeatureConfig( originalwalkWithBankedTransport, orignalwalkWithPoHTransport, originalAdvertisementPoH);
+          
+        }
+        return state;
     }
+    public static boolean walkWithPoHTransports(WorldPoint target, int distance, boolean withAdvertisementHouse){
+         boolean originalwalkWithBankedTransport =config.walkWithBankedTransports();
+        boolean orignalwalkWithPoHTransport = config.walkWithPoHTransports();
+        boolean originalAdvertisementPoH = config.withAdvertisementHouse();
+        setShortPathFeatureConfig( false, true, withAdvertisementHouse);
+    
+        WalkerState state = WalkerState.EXIT;
+        try {
+            state = walkWithStateAndFeatures(target, distance);
+        }finally {
+        // Always restore original configuration
+           setShortPathFeatureConfig( originalwalkWithBankedTransport, orignalwalkWithPoHTransport, originalAdvertisementPoH);
+        }
+        return state == WalkerState.ARRIVED;              
+    }
+     public static boolean walkWithPoHTransportsAndBankedTransports(WorldPoint target, int distance, boolean withAdvertisementHouse){
+         boolean originalwalkWithBankedTransport =config.walkWithBankedTransports();
+        boolean orignalwalkWithPoHTransport = config.walkWithPoHTransports();
+        boolean originalAdvertisementPoH = config.withAdvertisementHouse();
+        setShortPathFeatureConfig( true, true, withAdvertisementHouse);
+    
+        WalkerState state = WalkerState.EXIT;
+        try {
+            state = walkWithStateAndFeatures(target, distance);
+        }finally {
+        // Always restore original configuration
+           setShortPathFeatureConfig( originalwalkWithBankedTransport, orignalwalkWithPoHTransport, originalAdvertisementPoH);
+        }
+        return state == WalkerState.ARRIVED;              
+    }
+    private static void setShortPathFeatureConfig( boolean useBankItems, boolean usePoHTransports, boolean advertisementPoH) {
+        Microbot.getConfigManager().setConfiguration(
+                ShortestPathPlugin.CONFIG_GROUP,
+                "walkWithBankedTransports", useBankItems
+        );
+        Microbot.getConfigManager().setConfiguration(
+                ShortestPathPlugin.CONFIG_GROUP,
+                "walkWithPoHTransports", usePoHTransports
+        );
+        Microbot.getConfigManager().setConfiguration(
+                ShortestPathPlugin.CONFIG_GROUP,
+                "withAdvertisementHouse", advertisementPoH
+        );
+    }
+   
     /**
      * Travels to the target destination using the legacy walkTo-based approach with transport support.
      * Analyzes whether to go directly or via bank first for transport items.
@@ -3229,7 +3544,11 @@ public class Rs2Walker {
      * @param forceBanking If true, forces banking route regardless of efficiency
      * @return true if travel was successful, false otherwise
      */
-    public static WalkerState walkWithBankedTransportsAndState(WorldPoint target, int distance, boolean forceBanking) {
+    public static WalkerState walkWithStateAndFeatures(WorldPoint target) {
+        return walkWithStateAndFeatures(target, 10);
+    }
+  
+    public static WalkerState walkWithStateAndFeatures( WorldPoint target, int distance) {
         if (target == null) {
             log.warn("Cannot travel to null target location");
             return WalkerState.EXIT;
@@ -3245,62 +3564,179 @@ public class Rs2Walker {
         final Pathfinder pathfinder = ShortestPathPlugin.getPathfinder();
         if (pathfinder != null && !pathfinder.isDone())
             return WalkerState.MOVING;
-        if ((currentTarget != null && currentTarget.equals(target)) && ShortestPathPlugin.getMarker() != null){            
-            return WalkerState.MOVING;        
-        }
-        Rs2Walker.currentTarget =  null;        
-        // Check what transport items are needed
-        TransportRouteAnalysis comparison = compareRoutes(target);
-        List<Transport> missingTransports = getMissingTransports(getTransportsForDestination(target, true, TransportType.TELEPORTATION_SPELL));
+        if ((currentTarget != null && currentTarget.equals(target)) && ShortestPathPlugin.getMarker() != null)
+            return WalkerState.MOVING;
+         Rs2Walker.currentTarget =  null;        
         
-        Map<Integer, Integer> missingItemsWithQuantities = getMissingTransportItemIdsWithQuantities(missingTransports);
-        if(!missingTransports.isEmpty()){            
-            log.info("\n\tFor {} transports to destination in the bank to target {} we found {} missing items", 
-                missingTransports.size(), target, missingItemsWithQuantities.size());                    
+        // Get route analysis with all possible routes
+        TransportRouteAnalysis comparison = compareRoutes(target);        
+        
+        
+          
+        
+        if (comparison == null) {
+            log.warn("Route comparison failed, attempting direct route");
+            setTarget(null);
+            return walkWithStateInternal(target, distance);
         }
-        // If no missing transport items, go directly
-        if (missingItemsWithQuantities.isEmpty() && !forceBanking) {
-            log.info("\n\tNo missing transport items, traveling directly to: \n\t" + target);
-            setTarget(null); // Clear target to avoid conflicts
-            WalkerState state = walkWithStateInternal(target, distance);
-            if (state == WalkerState.ARRIVED) {
-                log.info("\n\tArrived directly at target: " + target);
-            } else {
-                log.warn("\n\tFailed to arrive directly at target: " + target + ", state: " + state);
-                setTarget(null);
-                return state;
+        
+        log.info("\n\tRoute comparison analysis: \n\t\t" + comparison.getAnalysis());
+        TransportRouteAnalysis.RouteType optimalRoute = comparison.getOptimalRouteType();
+        
+        setTarget(null); 
+        
+        switch (optimalRoute) {
+            case DIRECT:
+                log.info("\n\tUsing direct route to: " + target);            
+                return walkWithStateInternal(target, distance);
                 
+            case BANKING:
+                log.info("\n\tUsing banking route: {} -> {} -> {}", 
+                        Rs2Player.getWorldLocation(), comparison.getBankLocation(), target);
+                
+                Map<Integer, Integer> bankingMissingItems = comparison.getMissingTransportsItemsWithQuantitiesForBankingRoute();
+                return walkWithBankingState(comparison.getBankLocation(), 
+                                            bankingMissingItems, 
+                                            target,
+                                            distance);
+                                            
+            case POH:
+                log.info("\n\tUsing PoH route: {} -> {} -> {}", 
+                        Rs2Player.getWorldLocation(), comparison.getPohPortalLocation(), target);
+                
+                return walkWithPoHState(comparison.getPohPortalLocation(),
+                                       comparison.getPohTeleport(),
+                                       target,
+                                       distance);
+                                       
+            case COMBINED:
+                log.info("\n\tUsing combined route: {} -> {} -> {} -> {}", 
+                        Rs2Player.getWorldLocation(), comparison.getBankLocation(), 
+                        comparison.getPohPortalLocation(), target);
+                
+                Map<Integer, Integer> combinedMissingItems = comparison.getMissingTransportsItemsWithQuantitiesForCombinedRoute();
+                return walkWithCombinedState(comparison.getBankLocation(),
+                                           combinedMissingItems,
+                                           comparison.getPohPortalLocation(),
+                                           comparison.getPohTeleport(),
+                                           target,
+                                           distance);
+                                           
+            default:
+                log.warn("\n\tUnknown route type, falling back to direct route");
+                return walkWithStateInternal(target, distance);
+        }
+    }
+   
+    private static WalkerState walkWithPoHState(WorldPoint pohPortalLocation,
+                                                PoHTeleport pohTeleport,
+                                                WorldPoint finalTarget,
+                                                int distance) {
+        try {
+            if (pohPortalLocation == null || pohTeleport == null || finalTarget == null) {
+                log.warn("Cannot perform PoH workflow with null parameters");
+                return WalkerState.EXIT;
             }
-            return state;
-        } else {
-            // Compare routes if we have missing items that could be obtained from bank
-            // Use config for minimum bank route savings
-            int minBankRouteSavings = config != null ? config.minBankRouteSavings() : 0;
-            int tileSavings = comparison.getTileSavings();
-            boolean bankRouteIsBetter = !comparison.isDirectIsFaster() && tileSavings >= minBankRouteSavings;
-            // If forced banking or banking route is more efficient (with min savings), go via bank
-            if (forceBanking || bankRouteIsBetter) {
-                if (comparison.getNearestBank() != null) {
-                    log.info("\n\tUsing banking route: \n\t\tStart: {} -> Bank: {} -> Target: {}", 
-                            Rs2Player.getWorldLocation(), comparison.getBankLocation(), target);
-                    // Handle the complete banking workflow using legacy walkTo approach
-                    return walkWithBankingState(comparison.getBankLocation(), missingItemsWithQuantities, target, distance);
-                } else {
-                    log.warn("\n\tBanking route requested but no accessible bank found, trying direct route");
-                    setTarget(null); // Clear target to avoid conflicts
-                    return walkWithStateInternal(target, distance);
+            
+            // Step 1: Walk to PoH portal
+            setTarget(null);
+            log.debug("Walking to PoH portal at: " + pohPortalLocation);
+            WalkerState pohWalkResult = walkWithStateInternal(pohPortalLocation, distance);
+            if (pohWalkResult != WalkerState.ARRIVED) {
+                log.warn("Failed to arrive at PoH portal at: " + pohPortalLocation + ", state: " + pohWalkResult);
+                return pohWalkResult;
+            }
+            log.debug("Arrived at PoH portal, now entering house");
+            // Step 2: Enter the house (advertisement or own house)
+            boolean useAdvertisementHouse = config.withAdvertisementHouse();
+            if (useAdvertisementHouse) {
+                log.debug("Entering advertisement house");
+                Rs2PoH.HouseAdvertisement bestHouse = Rs2PoH.getBestAllTeleportHouse();
+                if (bestHouse == null || !Rs2PoH.enterHouse(bestHouse)) {
+                    log.warn("Failed to enter advertisement house");
+                    return WalkerState.EXIT;
                 }
             } else {
-                log.info("\n\tDirect route is more efficient despite missing items or does not meet min savings, traveling directly");
-                setTarget(null); // Clear target to avoid conflicts
-                return walkWithStateInternal(target, distance);
+                log.debug("Entering own house");
+                // For own house, interact with the portal directly
+                if (!Rs2GameObject.interact("Portal", "Home")) {
+                    log.warn("Failed to enter own house");
+                    return WalkerState.EXIT;
+                }
             }
+            
+            // Wait until we're in the house
+            if (!sleepUntil(() -> Rs2PoH.isInHouse(), 10000)) {
+                log.warn("Failed to enter PoH within timeout");
+                return WalkerState.EXIT;
+            }
+            
+            // Step 3: Use the PoH teleport based on type
+            log.debug("Using PoH teleport: " + pohTeleport);
+            boolean teleportSuccess = false;
+            
+            if (pohTeleport.isPortalTeleport()) {
+                // Try portal nexus teleports
+                if (pohTeleport.isXericsTalismanTeleport()) {
+                    teleportSuccess = Rs2PortalNexus.performXericsTalismanInteraction(pohTeleport);
+                } else if (pohTeleport.isDigsitePendantTeleport()) {
+                    teleportSuccess = Rs2PortalNexus.performDigsitePendantInteraction(pohTeleport);
+                } else {
+                    teleportSuccess = Rs2PortalNexus.performPortalNexusInteraction(pohTeleport);
+                }
+            } else if (pohTeleport.isJewelleryBoxTeleport()) {
+                // Try jewellery box teleports via achievement gallery
+                teleportSuccess = Rs2AchievementGallery.useJewelleryBox(pohTeleport);
+            }
+            
+            if (!teleportSuccess) {
+                log.warn("Failed to use PoH teleport: " + pohTeleport);
+                return WalkerState.EXIT;
+            }
+            
+            // Wait for teleport to complete
+            Rs2Player.waitForWalking();
+            sleep(1200); // Extra time for teleport animation
+            
+            // Step 4: Walk from teleport destination to final target
+            log.debug("Walking from PoH teleport destination to final target: " + finalTarget);
+            return walkWithStateInternal(finalTarget, distance);
+            
+        } catch (Exception e) {
+            log.error("Error in PoH workflow: " + e.getMessage(), e);
+            return WalkerState.EXIT;
         }
-        
-    
     }
-    
-    
+
+    private static WalkerState walkWithCombinedState(WorldPoint bankLocation,
+                                                    Map<Integer, Integer> missingItemsWithQuantities, 
+                                                    WorldPoint pohPortalLocation,
+                                                    PoHTeleport pohTeleport,
+                                                    WorldPoint finalTarget,
+                                                    int distance) {
+        try {
+            if (bankLocation == null || pohPortalLocation == null || pohTeleport == null || finalTarget == null) {
+                log.warn("Cannot perform combined workflow with null parameters");
+                return WalkerState.EXIT;
+            }
+            
+            // Step 1: Walk to bank and get missing items
+            log.debug("Starting combined route: bank -> PoH -> target");
+            WalkerState bankingResult = walkWithBankingState(bankLocation, missingItemsWithQuantities, pohPortalLocation, distance);
+            if (bankingResult != WalkerState.ARRIVED) {
+                log.warn("Failed banking step in combined route, state: " + bankingResult);
+                return bankingResult;
+            }
+            
+            // Step 2: Now that we're at PoH portal with required items, proceed with PoH teleport
+            log.debug("Banking complete, proceeding with PoH teleport workflow");
+            return walkWithPoHState(pohPortalLocation, pohTeleport, finalTarget, distance);
+            
+        } catch (Exception e) {
+            log.error("Error in combined workflow: " + e.getMessage(), e);
+            return WalkerState.EXIT;
+        }
+    }
    
    
     
@@ -3318,7 +3754,7 @@ public class Rs2Walker {
     }
     
     /**
-     * Handles the complete banking workflow using walkWithState: walk to bank, open, withdraw items, close, continue to target.
+     * Handles the complete banking workflow using walkWithStateAndFeatures: walk to bank, open, withdraw items, close, continue to target.
      * Enhanced version that accepts a map of item IDs with their required quantities and returns WalkerState.
      *
      * @param missingItemsWithQuantities Map of item IDs and their required quantities
@@ -3333,9 +3769,13 @@ public class Rs2Walker {
                 log.warn("Cannot perform banking workflow with null locations");
                 return WalkerState.EXIT;
             }
-            // Step 1: Walk to bank       
-            setTarget(null); // Clear current target to avoid conflicts           
-            WalkerState bankWalkResult = walkWithStateInternal(bankLocation, distance);
+            if(missingItemsWithQuantities == null || missingItemsWithQuantities.isEmpty()) {
+                log.error("No missing items to withdraw, skipping banking workflow, should not happen");
+                return walkWithStateInternal(finalTarget, distance);
+            }
+            // Step 1: Walk to bank
+            setTarget(null);  
+            WalkerState bankWalkResult = walkWithStateInternal(bankLocation,distance);
             if (bankWalkResult != WalkerState.ARRIVED) {
                 log.warn("Failed to arrive at bank at: " + bankLocation + ", state: " + bankWalkResult);
                 return bankWalkResult;
@@ -3410,4 +3850,446 @@ public class Rs2Walker {
 		}
 		return sleepUntil(() -> !Rs2Widget.isWidgetVisible(InterfaceID.Worldmap.CLOSE), 3000);
 	}
+
+
+    /**
+     * Enhanced version of getWalkPathWithBankItems that returns comprehensive analysis.
+     * 
+     * @param start Starting world point
+     * @param target Target world point
+     * @return PathAnalysisResult containing path, tiles, transports, and missing items
+     */
+    public static PathAnalysisResult getWalkPathWithBankItemsAnalysis(WorldPoint start, WorldPoint target) {
+        long startTime = System.nanoTime();
+        StringBuilder performanceLog = new StringBuilder();
+        performanceLog.append("=== getWalkPathWithBankItems Analysis ===\n");
+
+        // Store original configuration
+        boolean originalUseBankItems = ShortestPathPlugin.getPathfinderConfig().isUseBankItems();
+        
+        try {
+            // Configure for bank items
+            long refrestTransportCacheStartTime = System.nanoTime();
+            ShortestPathPlugin.getPathfinderConfig().setUseBankItems(true);
+            ShortestPathPlugin.getPathfinderConfig().refresh();
+            long refrestTransportCacheEndTime = System.nanoTime();
+
+            // Calculate path
+            long pathStartTime = System.nanoTime();
+            List<WorldPoint> path = getWalkPath(start, target);
+            long pathEndTime = System.nanoTime();
+            double pathTimeMs = (pathEndTime - pathStartTime) / 1_000_000.0;
+            
+            // Calculate tiles
+            long tilesStartTime = System.nanoTime();
+            int totalTiles = getTotalTilesFromPath(path, target);
+            long tilesEndTime = System.nanoTime();
+            double tilesTimeMs = (tilesEndTime - tilesStartTime) / 1_000_000.0;
+            
+            // Get transports (IMPORTANT: must be called before any config refresh)
+            long transportsStartTime = System.nanoTime();
+            List<Transport> transports = getTransportsForPath(path, 0, TransportType.TELEPORTATION_ITEM, true);
+            long transportsEndTime = System.nanoTime();
+            double transportsTimeMs = (transportsEndTime - transportsStartTime) / 1_000_000.0;
+            
+            // Get missing transports
+            long missingStartTime = System.nanoTime();
+            List<Transport> missingTransports = getMissingTransports(transports);
+            Map<Integer, Integer> missingItemsWithQuantities = getMissingTransportItemIdsWithQuantities(missingTransports);
+            long missingEndTime = System.nanoTime();
+            double missingTimeMs = (missingEndTime - missingStartTime) / 1_000_000.0;
+            
+            long totalEndTime = System.nanoTime();
+            double totalTimeMs = (totalEndTime - startTime) / 1_000_000.0;
+            performanceLog.append(String.format("Refresh transport cache: %.2f ms\n", 
+                (refrestTransportCacheEndTime - refrestTransportCacheStartTime) / 1_000_000.0));
+            performanceLog.append(String.format("Path calculation: %.2f ms\n", pathTimeMs));
+            performanceLog.append(String.format("Tiles calculation: %.2f ms\n", tilesTimeMs));
+            performanceLog.append(String.format("Transports analysis: %.2f ms\n", transportsTimeMs));
+            performanceLog.append(String.format("Missing items analysis: %.2f ms\n", missingTimeMs));
+            performanceLog.append(String.format("Total time: %.2f ms\n", totalTimeMs));
+            performanceLog.append(String.format("Bank items available: %d\n", Rs2Bank.bankItems().size()));
+            
+            return PathAnalysisResult.builder()
+                    .path(path)
+                    .totalTiles(totalTiles)
+                    .transports(transports)
+                    .missingTransports(missingTransports)
+                    .missingItemsWithQuantities(missingItemsWithQuantities)
+                    .startPoint(start)
+                    .targetPoint(target)
+                    .calculationTimeMs(totalTimeMs)
+                    .usedBankItems(true)
+                    .usedPoHTransports(false)
+                    .usedAdvertisementHouse(false)
+                    .performanceDetails(performanceLog.toString())
+                    .build();
+                    
+        } catch (Exception e) {
+            log.error("Error in getWalkPathWithBankItemsAnalysis: {}", e.getMessage(), e);
+            return PathAnalysisResult.builder()
+                    .path(List.of())
+                    .totalTiles(Integer.MAX_VALUE)
+                    .startPoint(start)
+                    .targetPoint(target)
+                    .calculationTimeMs((System.nanoTime() - startTime) / 1_000_000.0)
+                    .usedBankItems(true)
+                    .performanceDetails("Error: " + e.getMessage())
+                    .build();
+        } finally {
+            // Always restore original configuration
+            ShortestPathPlugin.getPathfinderConfig().setUseBankItems(originalUseBankItems);
+            // Note: Not calling refresh() here to preserve transport cache for caller
+        }
+    }
+
+    /**
+     * Enhanced version of getWalkPathWithPoH that returns comprehensive analysis.
+     */
+    public static PathAnalysisResult getWalkPathWithPoHAnalysis(WorldPoint start, WorldPoint target) {
+        long startTime = System.nanoTime();
+        StringBuilder performanceLog = new StringBuilder();
+        performanceLog.append("=== getWalkPathWithPoH Analysis ===\n");
+
+        // Store original configuration
+        boolean originalIncludePoH = ShortestPathPlugin.getPathfinderConfig().isIncludePoHTeleports();
+        boolean originalAdvertisementHouse = ShortestPathPlugin.getPathfinderConfig().isAssumeAdvertisementHouse();
+        TeleportationItem  originalUseTeleportationItems = Microbot.getConfigManager().getConfiguration(
+                ShortestPathPlugin.CONFIG_GROUP, "useTeleportationItems", TeleportationItem.class);
+        boolean originalUseTeleportationSpells = Microbot.getConfigManager().getConfiguration(
+                ShortestPathPlugin.CONFIG_GROUP, "useTeleportationSpells", Boolean.class);
+        try {
+            // Configure for PoH
+            ShortestPathPlugin.getPathfinderConfig().setIncludePoHTeleports(true);
+            ShortestPathPlugin.getPathfinderConfig().setAssumeAdvertisementHouse(true);
+            ShortestPathPlugin.getPathfinderConfig().refresh();
+            
+            // Calculate path
+            long pathStartTime = System.nanoTime();
+            List<WorldPoint> path = getWalkPath(start, target);
+            long pathEndTime = System.nanoTime();
+            double pathTimeMs = (pathEndTime - pathStartTime) / 1_000_000.0;
+            
+            // Calculate tiles
+            int totalTiles = getTotalTilesFromPath(path, target);
+            
+            // Get transports
+            List<Transport> transports = getTransportsForPath(path, 0, TransportType.TELEPORTATION_ITEM, true);
+            List<Transport> missingTransports = getMissingTransports(transports);
+            Map<Integer, Integer> missingItemsWithQuantities = getMissingTransportItemIdsWithQuantities(missingTransports);
+            
+            long totalEndTime = System.nanoTime();
+            double totalTimeMs = (totalEndTime - startTime) / 1_000_000.0;
+            
+            performanceLog.append(String.format("Path calculation: %.2f ms\n", pathTimeMs));
+            performanceLog.append(String.format("Total time: %.2f ms\n", totalTimeMs));
+            
+            return PathAnalysisResult.builder()
+                    .path(path)
+                    .totalTiles(totalTiles)
+                    .transports(transports)
+                    .missingTransports(missingTransports)
+                    .missingItemsWithQuantities(missingItemsWithQuantities)
+                    .startPoint(start)
+                    .targetPoint(target)
+                    .calculationTimeMs(totalTimeMs)
+                    .usedBankItems(false)
+                    .usedPoHTransports(true)
+                    .usedAdvertisementHouse(true)
+                    .performanceDetails(performanceLog.toString())
+                    .build();
+                    
+        } catch (Exception e) {
+            log.error("Error in getWalkPathWithPoHAnalysis: {}", e.getMessage(), e);
+            return PathAnalysisResult.builder()
+                    .path(List.of())
+                    .totalTiles(Integer.MAX_VALUE)
+                    .startPoint(start)
+                    .targetPoint(target)
+                    .calculationTimeMs((System.nanoTime() - startTime) / 1_000_000.0)
+                    .usedPoHTransports(true)
+                    .usedAdvertisementHouse(true)
+                    .performanceDetails("Error: " + e.getMessage())
+                    .build();
+        } finally {
+            // Restore original configuration
+            ShortestPathPlugin.getPathfinderConfig().setIncludePoHTeleports(originalIncludePoH);
+            ShortestPathPlugin.getPathfinderConfig().setAssumeAdvertisementHouse(originalAdvertisementHouse);
+            Microbot.getConfigManager().setConfiguration(
+                    ShortestPathPlugin.CONFIG_GROUP, "useTeleportationItems", originalUseTeleportationItems);
+            Microbot.getConfigManager().setConfiguration(
+                    ShortestPathPlugin.CONFIG_GROUP, "useTeleportationSpells", originalUseTeleportationSpells);
+        }
+    }
+
+    /**
+     * Enhanced version of getWalkPathWithPoHAndBankedItems that returns comprehensive analysis.
+     */
+    public static PathAnalysisResult getWalkPathWithPoHAndBankedItemsAnalysis(WorldPoint start, WorldPoint target) {
+        long startTime = System.nanoTime();
+        StringBuilder performanceLog = new StringBuilder();
+        performanceLog.append("=== getWalkPathWithPoHAndBankedItems Analysis ===\n");
+
+        // Store original configuration
+        boolean originalIncludePoH = ShortestPathPlugin.getPathfinderConfig().isIncludePoHTeleports();
+        boolean originalAdvertisementHouse = ShortestPathPlugin.getPathfinderConfig().isAssumeAdvertisementHouse();
+        boolean originalUseBankItems = ShortestPathPlugin.getPathfinderConfig().isUseBankItems();
+        TeleportationItem  originalUseTeleportationItems = Microbot.getConfigManager().getConfiguration(
+                ShortestPathPlugin.CONFIG_GROUP, "useTeleportationItems", TeleportationItem.class);
+        boolean originalUseTeleportationSpells = Microbot.getConfigManager().getConfiguration(
+                ShortestPathPlugin.CONFIG_GROUP, "useTeleportationSpells", Boolean.class);
+        try {
+            // Configure for both PoH and bank items
+            ShortestPathPlugin.getPathfinderConfig().setIncludePoHTeleports(true);
+            ShortestPathPlugin.getPathfinderConfig().setAssumeAdvertisementHouse(true);
+            ShortestPathPlugin.getPathfinderConfig().setUseBankItems(true);
+            Microbot.getConfigManager().setConfiguration(
+                    ShortestPathPlugin.CONFIG_GROUP, "useTeleportationItems", TeleportationItem.INVENTORY);
+            Microbot.getConfigManager().setConfiguration(
+                    ShortestPathPlugin.CONFIG_GROUP, "useTeleportationSpells", true);
+            ShortestPathPlugin.getPathfinderConfig().refresh();
+            
+            // Calculate path
+            long pathStartTime = System.nanoTime();
+            List<WorldPoint> path = getWalkPath(start, target);
+            long pathEndTime = System.nanoTime();
+            double pathTimeMs = (pathEndTime - pathStartTime) / 1_000_000.0;
+            
+            // Calculate tiles and transports
+            int totalTiles = getTotalTilesFromPath(path, target);
+            List<Transport> transports = getTransportsForPath(path, 0, TransportType.TELEPORTATION_ITEM, true);
+            List<Transport> missingTransports = getMissingTransports(transports);
+            Map<Integer, Integer> missingItemsWithQuantities = getMissingTransportItemIdsWithQuantities(missingTransports);
+            
+            long totalEndTime = System.nanoTime();
+            double totalTimeMs = (totalEndTime - startTime) / 1_000_000.0;
+            
+            performanceLog.append(String.format("Path calculation: %.2f ms\n", pathTimeMs));
+            performanceLog.append(String.format("Total time: %.2f ms\n", totalTimeMs));
+            
+            return PathAnalysisResult.builder()
+                    .path(path)
+                    .totalTiles(totalTiles)
+                    .transports(transports)
+                    .missingTransports(missingTransports)
+                    .missingItemsWithQuantities(missingItemsWithQuantities)
+                    .startPoint(start)
+                    .targetPoint(target)
+                    .calculationTimeMs(totalTimeMs)
+                    .usedBankItems(true)
+                    .usedPoHTransports(true)
+                    .usedAdvertisementHouse(true)
+                    .performanceDetails(performanceLog.toString())
+                    .build();
+                    
+        } catch (Exception e) {
+            log.error("Error in getWalkPathWithPoHAndBankedItemsAnalysis: {}", e.getMessage(), e);
+            return PathAnalysisResult.builder()
+                    .path(List.of())
+                    .totalTiles(Integer.MAX_VALUE)
+                    .startPoint(start)
+                    .targetPoint(target)
+                    .calculationTimeMs((System.nanoTime() - startTime) / 1_000_000.0)
+                    .usedBankItems(true)
+                    .usedPoHTransports(true)
+                    .usedAdvertisementHouse(true)
+                    .performanceDetails("Error: " + e.getMessage())
+                    .build();
+        } finally {
+            // Restore original configuration
+            ShortestPathPlugin.getPathfinderConfig().setIncludePoHTeleports(originalIncludePoH);
+            ShortestPathPlugin.getPathfinderConfig().setAssumeAdvertisementHouse(originalAdvertisementHouse);
+            ShortestPathPlugin.getPathfinderConfig().setUseBankItems(originalUseBankItems);
+            Microbot.getConfigManager().setConfiguration(
+                    ShortestPathPlugin.CONFIG_GROUP, "useTeleportationItems", originalUseTeleportationItems);
+            Microbot.getConfigManager().setConfiguration(
+                    ShortestPathPlugin.CONFIG_GROUP, "useTeleportationSpells", originalUseTeleportationSpells);
+            // Note: Not calling refresh() here to preserve transport cache for caller
+        }
+    }
+
+    /**
+     * Enhanced version of getWalkPath that returns comprehensive analysis.
+     */
+    public static PathAnalysisResult getWalkPathAnalysis(WorldPoint start, WorldPoint target) {
+        long startTime = System.nanoTime();
+        StringBuilder performanceLog = new StringBuilder();
+        performanceLog.append("=== getWalkPath Analysis ===\n");
+
+        try {
+            // Calculate path (uses current configuration)
+            long pathStartTime = System.nanoTime();
+            List<WorldPoint> path = getWalkPath(start, target);
+            long pathEndTime = System.nanoTime();
+            double pathTimeMs = (pathEndTime - pathStartTime) / 1_000_000.0;
+            
+            // Calculate tiles and transports
+            int totalTiles = getTotalTilesFromPath(path, target);
+            List<Transport> transports = getTransportsForPath(path, 0, TransportType.TELEPORTATION_ITEM, true);
+            List<Transport> missingTransports = getMissingTransports(transports);
+            Map<Integer, Integer> missingItemsWithQuantities = getMissingTransportItemIdsWithQuantities(missingTransports);
+            
+            long totalEndTime = System.nanoTime();
+            double totalTimeMs = (totalEndTime - startTime) / 1_000_000.0;
+            
+            performanceLog.append(String.format("Path calculation: %.2f ms\n", pathTimeMs));
+            performanceLog.append(String.format("Total time: %.2f ms\n", totalTimeMs));
+            
+            // Get current configuration state
+            boolean usedBankItems = ShortestPathPlugin.getPathfinderConfig().isUseBankItems();
+            boolean usedPoHTransports = ShortestPathPlugin.getPathfinderConfig().isIncludePoHTeleports();
+            boolean usedAdvertisementHouse = ShortestPathPlugin.getPathfinderConfig().isAssumeAdvertisementHouse();
+            
+            return PathAnalysisResult.builder()
+                    .path(path)
+                    .totalTiles(totalTiles)
+                    .transports(transports)
+                    .missingTransports(missingTransports)
+                    .missingItemsWithQuantities(missingItemsWithQuantities)
+                    .startPoint(start)
+                    .targetPoint(target)
+                    .calculationTimeMs(totalTimeMs)
+                    .usedBankItems(usedBankItems)
+                    .usedPoHTransports(usedPoHTransports)
+                    .usedAdvertisementHouse(usedAdvertisementHouse)
+                    .performanceDetails(performanceLog.toString())
+                    .build();
+                    
+        } catch (Exception e) {
+            log.error("Error in getWalkPathAnalysis: {}", e.getMessage(), e);
+            return PathAnalysisResult.builder()
+                    .path(List.of())
+                    .totalTiles(Integer.MAX_VALUE)
+                    .startPoint(start)
+                    .targetPoint(target)
+                    .calculationTimeMs((System.nanoTime() - startTime) / 1_000_000.0)
+                    .performanceDetails("Error: " + e.getMessage())
+                    .build();
+        }
+    }
+
+    // Backward compatibility methods
+    private static List<WorldPoint> getWalkPathWithBankItems(WorldPoint start, WorldPoint target) {
+        return getWalkPathWithBankItemsAnalysis(start, target).getPath();
+    }
+
+    private static List<WorldPoint> getWalkPathWithPoH(WorldPoint start, WorldPoint target) {
+        return getWalkPathWithPoHAnalysis(start, target).getPath();
+    }
+
+    private static List<WorldPoint> getWalkPathWithPoHAndBankedItems(WorldPoint start, WorldPoint target) {
+        return getWalkPathWithPoHAndBankedItemsAnalysis(start, target).getPath();
+    }
+
+
+
+    /**
+     * Finds the house teleport transport from the current set of transports.
+     * Prefers spell transport over item transport.
+     * 
+     * @return the house teleport transport, null if not found
+     */
+    public static Transport getHouseTransportFromPathfinder(boolean preferSpell) {
+        if (ShortestPathPlugin.getPathfinderConfig() == null) {
+            return null;
+        }
+        
+        Map<WorldPoint, Set<Transport>> allTransports = ShortestPathPlugin.getPathfinderConfig().getAllTransports();
+        Transport spellTransport = null;
+        Transport itemTransport = null;
+        
+        for (Set<Transport> transportSet : allTransports.values()) {
+
+            Transport transport = getTransportToHouseFromTransports(transportSet, preferSpell);
+            
+            if (transport != null) {
+                if (transport.getType() == TransportType.TELEPORTATION_SPELL) {
+                    spellTransport = transport;
+                } else if (transport.getType() == TransportType.TELEPORTATION_ITEM) {
+                    itemTransport = transport;      
+                }
+            }
+        }
+        if (spellTransport == null && itemTransport == null) {
+            return null; // No house transport found
+        }
+        if (preferSpell && spellTransport != null) {
+            return spellTransport; // Prefer spell transport if available
+        }        
+        return  itemTransport;              
+    }
+
+    /**
+     * Finds the house teleport transport from the current set of transports.
+     * Prefers spell transport over item transport.
+     * 
+     * @return the house teleport transport, null if not found
+     */
+    public static Transport getTransportToHouseFromTransports(Set<Transport> transportSet, boolean preferSpell) {
+        Transport spellTransport = null;
+        Transport itemTransport = null;
+        for (Transport transport : transportSet) {
+            if (transport.getDisplayInfo() != null) {
+                String displayInfo = transport.getDisplayInfo().toLowerCase();
+                
+                // Check for "Teleport to House" spell
+                if (displayInfo.equals("teleport to house") && 
+                    transport.getType() == TransportType.TELEPORTATION_SPELL) {
+                    spellTransport = transport;
+                }
+                
+                // Check for "Teleport to House" tablet
+                if (displayInfo.contains("teleport to house") && 
+                    transport.getType() == TransportType.TELEPORTATION_ITEM) {
+                    itemTransport = transport;
+                }
+            }
+        }
+        if (spellTransport == null && itemTransport == null) {
+            return null; // No house transport found
+        }
+        if (preferSpell && spellTransport != null) {
+            return spellTransport; // Prefer spell transport if available
+        }        
+        return  itemTransport;          
+    }
+    
+    
+   
+    
+
+    static List<Transport>  getTransportAvilabeInHouse(List<Transport> transports) {
+        List<Transport> availableTransports = new ArrayList<>();
+        for (Transport transport : transports) {
+            if (transport.getType() == TransportType.TELEPORTATION_ITEM 
+                    || transport.getType() == TransportType.TELEPORTATION_SPELL 
+                    || transport.getType() == TransportType.FAIRY_RING
+                    || transport.getType() == TransportType.SPIRIT_TREE
+                    ) {                 
+                // check if we have a transport to the house -> should be available                 
+                PoHTeleport pohHTeleport = PoHTeleport.fromTransport(transport);                             
+                boolean useAdvertisement = config.withAdvertisementHouse();
+                if (pohHTeleport != null) {
+                    // varbit check, if the player has the teleport available 
+                    //-> should be already consider in the path finder by only adding the transport we have i unlock or want to use house advertisement
+                    boolean havePOHTeleportAvailable = Rs2PoH.isTeleportAvailable(pohHTeleport); 
+                    log.info("\ntHave PoH teleport available: " + havePOHTeleportAvailable + "\n\tuseAdvertisement: " + useAdvertisement);
+                    log.info("\n\tpohHTeleport: " + pohHTeleport + "\n\ttransport: " + transport);
+                    if (havePOHTeleportAvailable || useAdvertisement){
+                        availableTransports.add(transport);
+                        log.info("\n\tAdded transport to available transports: " + transport);
+                    } else {
+                        log.warn("\n\tSkipping transport as PoH teleport is not available: " + transport);
+                                       
+                    }                    
+
+                }
+                
+            }
+        }
+        return availableTransports;
+    }
+    private Transport transportToHouse(boolean preferSpell){        
+        return getHouseTransportFromPathfinder(preferSpell);
+    }
 }

@@ -3,13 +3,15 @@ package net.runelite.client.plugins.microbot.util.widget;
 import net.runelite.api.MenuAction;
 import net.runelite.api.annotations.Component;
 import java.awt.Rectangle;
-import net.runelite.api.widgets.InterfaceID;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
 import net.runelite.client.plugins.microbot.util.misc.Rs2UiHelper;
 
+import java.awt.*;
 import java.util.*;
+import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -497,5 +499,321 @@ public class Rs2Widget {
 	   }
 	   return false;
    }
+    // ========== SCROLLING FUNCTIONALITY ==========
+    
+    /**
+     * Checks if a widget is within the specified canvas bounds
+     * @param widget The widget to check
+     * @param canvasBounds The canvas bounds to check against
+     * @return true if the widget is within bounds and clickable, false otherwise
+     */
+    public static boolean isWidgetWithinCanvasBounds(Widget widget, Rectangle canvasBounds) {
+        if (widget == null || widget.isHidden() || canvasBounds == null) {
+            return false;
+        }
+        
+        net.runelite.api.Point widgetLocation = widget.getCanvasLocation();
+        if (widgetLocation == null) {
+            return false;
+        }
+        
+        Rectangle widgetBounds = new Rectangle(widgetLocation.getX(), widgetLocation.getY(), 
+                                             widget.getWidth(), widget.getHeight());
+        
+        // Check if the widget is at least partially within canvas bounds
+        return canvasBounds.intersects(widgetBounds);
+    }
+    
+    /**
+     * Clicks a widget with automatic scrolling if the widget is not within the canvas bounds.
+     * This method will attempt to scroll the widget into view before clicking it.
+     * Uses widget IDs to refresh widget references after each scroll attempt to handle stale widgets.
+     * @param widgetId The widget ID
+     * @param childId The child ID
+     * @param canvasBounds The canvas bounds to scroll within
+     * @param scrollContainer The container widget to scroll (can be null to use parent)
+     * @param maxScrollAttempts Maximum number of scroll attempts before giving up
+     * @return true if the widget was successfully clicked, false otherwise
+     */
+    public static boolean clickWidgetWithScrolling(int widgetId, int childId, Rectangle canvasBounds, 
+                                                 Widget scrollContainer, int maxScrollAttempts) {
+        if (canvasBounds == null) {
+            Microbot.log("Invalid canvas bounds for scrolling click");
+            return false;
+        }
+        
+        // Get fresh widget reference
+        Widget targetWidget = getWidget(widgetId, childId);
+        if (targetWidget == null || targetWidget.isHidden()) {
+            Microbot.log("Target widget not found or hidden: " + widgetId + "," + childId);
+            return false;
+        }
+        
+        // If widget is already within bounds, click it directly
+        if (isWidgetWithinCanvasBounds(targetWidget, canvasBounds)) {
+            clickWidget(targetWidget);
+            return true;
+        }
+        
+        // Determine scroll container (use parent if not specified)
+        Widget container = scrollContainer;
+        if (container == null) {
+            container = targetWidget.getParent();
+        }
+        
+        if (container == null) {
+            Microbot.log("No scroll container available for scrolling click");
+            return false;
+        }
+        
+        // Get container center point for scrolling
+        net.runelite.api.Point containerLocation = container.getCanvasLocation();
+        if (containerLocation == null) {
+            Microbot.log("Container canvas location not available for scrolling");
+            return false;
+        }
+        
+        net.runelite.api.Point containerCenter = new net.runelite.api.Point(
+            containerLocation.getX() + container.getWidth() / 2,
+            containerLocation.getY() + container.getHeight() / 2
+        );
+        
+        // Determine initial scroll direction based on widget position relative to canvas
+        net.runelite.api.Point targetLocation = targetWidget.getCanvasLocation();
+        if (targetLocation == null) {
+            Microbot.log("Target widget canvas location not available");
+            return false;
+        }
+        
+        boolean scrollDown = targetLocation.getY() > (canvasBounds.y + canvasBounds.height);
+        
+        // Perform scrolling attempts
+        for (int attempt = 0; attempt < maxScrollAttempts; attempt++) {
+            // Move mouse to container center before scrolling
+            Microbot.getNaturalMouse().moveTo(containerCenter.getX(), containerCenter.getY());
+            
+            // Perform scroll action
+            if (scrollDown) {
+                Microbot.getMouse().scrollDown(containerCenter);
+            } else {
+                Microbot.getMouse().scrollUp(containerCenter);
+            }
+            
+            // Wait for scroll to complete
+            sleepUntil(() -> true, 300);
+            
+            // Refresh widget reference after scroll (important for stale widget handling)
+            targetWidget = getWidget(widgetId, childId);
+            if (targetWidget == null || targetWidget.isHidden()) {
+                Microbot.log("Target widget became null/hidden after scroll attempt " + (attempt + 1));
+                continue;
+            }
+            
+            // Check if widget is now within bounds
+            if (isWidgetWithinCanvasBounds(targetWidget, canvasBounds)) {
+                clickWidget(targetWidget);
+                return true;
+            }
+            
+            // Update target location and scroll direction for next attempt
+            targetLocation = targetWidget.getCanvasLocation();
+            if (targetLocation != null) {
+                scrollDown = targetLocation.getY() > (canvasBounds.y + canvasBounds.height);
+            }
+        }
+        
+        Microbot.log("Failed to scroll widget into view after " + maxScrollAttempts + " attempts");
+        return false;
+    }
 
+    /**
+     * Scrolls a container until the target widget is within the canvas bounds, then clicks it
+     * WARNING: This method uses the same widget reference throughout - prefer the widgetId/childId version for reliability.
+     * @param targetWidget The widget to click
+     * @param canvasBounds The canvas bounds to scroll within
+     * @param scrollContainer The container widget to scroll (can be null to use targetWidget's parent)
+     * @param maxScrollAttempts Maximum number of scroll attempts before giving up
+     * @return true if the widget was successfully clicked, false otherwise
+     */
+    public static boolean clickWidgetWithScrolling(Widget targetWidget, Rectangle canvasBounds, 
+                                                 Widget scrollContainer, int maxScrollAttempts) {
+        if (targetWidget == null || targetWidget.isHidden() || canvasBounds == null) {
+            Microbot.log("Invalid widget or canvas bounds for scrolling click");
+            return false;
+        }
+        
+        // If widget is already within bounds, click it directly
+        if (isWidgetWithinCanvasBounds(targetWidget, canvasBounds)) {
+            clickWidget(targetWidget);
+            return true;
+        }
+        
+        // Determine scroll container (use parent if not specified)
+        Widget container = scrollContainer;
+        if (container == null) {
+            container = targetWidget.getParent();
+        }
+        
+        if (container == null) {
+            Microbot.log("No scroll container available for scrolling click");
+            return false;
+        }
+        
+        // Get container center point for scrolling
+        net.runelite.api.Point containerLocation = container.getCanvasLocation();
+        if (containerLocation == null) {
+            Microbot.log("Container canvas location not available for scrolling");
+            return false;
+        }
+        
+        net.runelite.api.Point containerCenter = new net.runelite.api.Point(
+            containerLocation.getX() + container.getWidth() / 2,
+            containerLocation.getY() + container.getHeight() / 2
+        );
+        
+        // Determine scroll direction based on widget position relative to canvas
+        net.runelite.api.Point targetLocation = targetWidget.getCanvasLocation();
+        if (targetLocation == null) {
+            Microbot.log("Target widget canvas location not available");
+            return false;
+        }
+        
+        boolean scrollDown = targetLocation.getY() > (canvasBounds.y + canvasBounds.height);
+        int targetWidgetId = targetWidget.getId();
+        // Perform scrolling attempts
+        for (int attempt = 0; attempt < maxScrollAttempts; attempt++) {
+            // Move mouse to container center before scrolling
+            Microbot.getNaturalMouse().moveTo(containerCenter.getX(), containerCenter.getY());
+            
+            // Perform scroll action
+            if (scrollDown) {
+                Microbot.getMouse().scrollDown(containerCenter);
+            } else {
+                Microbot.getMouse().scrollUp(containerCenter);
+            }
+            
+            // Wait for scroll to complete
+            sleepUntil(() -> true, 300);
+             // Refresh widget reference after scroll (important for stale widget handling)
+            targetWidget = getWidget(targetWidgetId);
+            if (targetWidget == null || targetWidget.isHidden()) {
+                Microbot.log("Target widget became null/hidden after scroll attempt " + (attempt + 1));
+                continue;
+            }
+            // Check if widget is now within bounds
+            if (isWidgetWithinCanvasBounds(targetWidget, canvasBounds)) {
+                clickWidget(targetWidget);
+                return true;
+            }
+            
+            // Update target location and scroll direction for next attempt
+            targetLocation = targetWidget.getCanvasLocation();
+            if (targetLocation != null) {
+                scrollDown = targetLocation.getY() > (canvasBounds.y + canvasBounds.height);
+            }
+        }
+        
+        Microbot.log("Failed to scroll widget into view after " + maxScrollAttempts + " attempts");
+        return false;
+    }
+    
+    /**
+     * Convenience method for clickWidgetWithScrolling with default scroll attempts
+     * @param targetWidget The widget to click
+     * @param canvasBounds The canvas bounds to scroll within
+     * @param scrollContainer The container widget to scroll
+     * @return true if the widget was successfully clicked, false otherwise
+     */
+    public static boolean clickWidgetWithScrolling(Widget targetWidget, Rectangle canvasBounds, 
+                                                 Widget scrollContainer) {
+        return clickWidgetWithScrolling(targetWidget, canvasBounds, scrollContainer, 10);
+    }
+    
+    /**
+     * Convenience method for clickWidgetWithScrolling using widget IDs with default scroll attempts
+     * @param widgetId The widget ID
+     * @param childId The child ID
+     * @param canvasBounds The canvas bounds to scroll within
+     * @param scrollContainer The container widget to scroll
+     * @return true if the widget was successfully clicked, false otherwise
+     */
+    public static boolean clickWidgetWithScrolling(int widgetId, int childId, Rectangle canvasBounds, 
+                                                 Widget scrollContainer) {
+        return clickWidgetWithScrolling(widgetId, childId, canvasBounds, scrollContainer, 10);
+    }
+    
+    /**
+     * Convenience method for clickWidgetWithScrolling using widget IDs and parent bounds for scrolling
+     * @param widgetId The widget ID
+     * @param childId The child ID
+     * @param maxScrollAttempts Maximum number of scroll attempts before giving up
+     * @return true if the widget was successfully clicked, false otherwise
+     */
+    public static boolean clickWidgetWithScrolling(int widgetId, int childId, int maxScrollAttempts) {
+        Widget targetWidget = getWidget(widgetId, childId);
+        if (targetWidget == null || targetWidget.isHidden()) {
+            Microbot.log("Target widget not found or hidden: " + widgetId + "," + childId);
+            return false;
+        }
+        
+        Widget parent = targetWidget.getParent();
+        if (parent == null) {
+            Microbot.log("Target widget has no parent for canvas bounds");
+            return false;
+        }
+        
+        Rectangle canvasBounds = parent.getBounds();
+        if (canvasBounds == null) {
+            Microbot.log("Failed to get canvas bounds from parent widget");
+            return false;
+        }
+        
+        return clickWidgetWithScrolling(widgetId, childId, canvasBounds, parent, maxScrollAttempts);
+    }
+    
+    /**
+     * Convenience method for clickWidgetWithScrolling using widget IDs and parent bounds with default attempts
+     * @param widgetId The widget ID
+     * @param childId The child ID
+     * @return true if the widget was successfully clicked, false otherwise
+     */
+    public static boolean clickWidgetWithScrolling(int widgetId, int childId) {
+        return clickWidgetWithScrolling(widgetId, childId, 10);
+    }
+    
+    /**
+     * Convenience method for clickWidgetWithScrolling using widget's parent bounds for scrolling
+     * @param targetWidget The widget to click
+     * @param maxScrollAttempts Maximum number of scroll attempts before giving up
+     * @return true if the widget was successfully clicked, false otherwise
+     */
+    public static boolean clickWidgetWithScrolling(Widget targetWidget, int maxScrollAttempts) {
+        if (targetWidget == null) {
+            Microbot.log("Target widget is null for scrolling click");
+            return false;
+        }
+        
+        Widget parent = targetWidget.getParent();
+        if (parent == null) {
+            Microbot.log("Target widget has no parent for canvas bounds");
+            return false;
+        }
+        
+        Rectangle canvasBounds = parent.getBounds();
+        if (canvasBounds == null) {
+            Microbot.log("Failed to get canvas bounds from parent widget");
+            return false;
+        }
+        
+        return clickWidgetWithScrolling(targetWidget, canvasBounds, parent, maxScrollAttempts);
+    }
+    
+    /**
+     * Convenience method for clickWidgetWithScrolling using widget's parent bounds with default attempts
+     * @param targetWidget The widget to click
+     * @return true if the widget was successfully clicked, false otherwise
+     */
+    public static boolean clickWidgetWithScrolling(Widget targetWidget) {
+        return clickWidgetWithScrolling(targetWidget, 10);
+    }
 }

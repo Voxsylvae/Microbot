@@ -17,7 +17,7 @@ import net.runelite.client.plugins.microbot.questhelper.helpers.mischelpers.farm
 import net.runelite.client.plugins.microbot.util.cache.Rs2SpiritTreeCache;
 import net.runelite.client.plugins.microbot.util.misc.Rs2UiHelper;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
-import net.runelite.client.plugins.microbot.util.poh.PohTeleports;
+import net.runelite.client.plugins.microbot.util.poh.Rs2PoH;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
 import java.util.ArrayList;
@@ -319,7 +319,7 @@ public enum SpiritTree {
         }
         // Check if we are in the player's house
         // Check if player is in their own house (POH)
-        if (!PohTeleports.isInHouse()) {
+        if (!Rs2PoH.isInHouse()) {
             // Check if this POH spirit tree is present in the spirit tree cache
             if (Rs2SpiritTreeCache.getInstance().containsKey(this)) {
                 return Rs2SpiritTreeCache.getInstance().get(this).isAvailableForTravel();

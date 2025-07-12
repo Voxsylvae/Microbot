@@ -25,12 +25,11 @@ public class ShortestPathScript extends Script {
                 if (!Microbot.isLoggedIn()) return;
 
                 if (getTriggerWalker() != null) {
-                    WalkerState state  = WalkerState.UNREACHABLE;
-
-                    if (config.walkWithBankedTransports()){
-                        state = Rs2Walker.walkWithBankedTransportsAndState(getTriggerWalker(),10,false);
-                    } else {
-                        state = Rs2Walker.walkWithState(getTriggerWalker());
+                    WalkerState state  = WalkerState.UNREACHABLE;                    
+                    if (config.walkWithBankedTransports() || config.walkWithPoHTransports()){
+                       state= Rs2Walker.walkWithStateAndFeatures(getTriggerWalker(),10);
+                    }else {
+                       state= Rs2Walker.walkWithState(getTriggerWalker(),10);
                     }
                     if (state == WalkerState.ARRIVED || state == WalkerState.UNREACHABLE) {
                         setTriggerWalker(null);
