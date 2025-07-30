@@ -70,14 +70,10 @@ import javax.inject.Named;
 import java.awt.*;
 import java.util.List;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 import static net.runelite.client.plugins.microbot.util.Global.*;
 
@@ -260,7 +256,6 @@ public class Rs2Walker {
 
             // Edgeville/ardy wilderness lever warning
             if (Rs2Widget.isWidgetVisible(229, 1)) {
-                if (Rs2Dialogue.getDialogueText() == null) return WalkerState.MOVING;
                 if (Rs2Dialogue.getDialogueText().equalsIgnoreCase("Warning! The lever will teleport you deep into the Wilderness.")) {
                     Microbot.log("Detected Wilderness lever warning, interacting...");
                     Rs2Dialogue.clickContinue();
@@ -591,8 +586,20 @@ public class Rs2Walker {
         pathfinder.run();        
         List<WorldPoint> path = pathfinder.getPath();       
         if (path.isEmpty() || path.get(path.size() - 1).getPlane() != destination.getPlane()) return Integer.MAX_VALUE;
-        WorldArea pathArea = new WorldArea(path.get(path.size() - 1), 2, 2);
-        WorldArea objectArea = new WorldArea(destination, 2, 2);
+        // Create a WorldArea centered on the worldPoint by calculating the south-west corner
+        WorldPoint pathPoint_SW = new WorldPoint(
+            path.get(path.size() - 1).getX() - 2, 
+            path.get(path.size() - 1).getY() - 2, 
+            path.get(path.size() - 1).getPlane()
+        );
+        // Create a WorldArea centered on the worldPoint by calculating the south-west corner
+        WorldPoint objectPoint_SW = new WorldPoint(
+            destination.getX() - 2, 
+            destination.getY() - 2, 
+            destination.getPlane()
+        ); 
+        WorldArea pathArea = new WorldArea(pathPoint_SW, 5, 5);
+        WorldArea objectArea = new WorldArea(objectPoint_SW, 5, 5);
         if (!pathArea.intersectsWith2D(objectArea)) {
             return Integer.MAX_VALUE;
         }
@@ -612,8 +619,23 @@ public class Rs2Walker {
      */
     public static int getTotalTilesFromPath(List<WorldPoint> path, WorldPoint destination) {
         if (path.isEmpty() || path.get(path.size() - 1).getPlane() != destination.getPlane()) return Integer.MAX_VALUE;
-        WorldArea pathArea = new WorldArea(path.get(path.size() - 1), 8, 8);
-        WorldArea objectArea = new WorldArea(destination, 8, 8);
+        
+        // Create centered WorldAreas instead of corner-based
+        WorldPoint pathEndpoint = path.get(path.size() - 1);
+        WorldPoint pathSouthWest = new WorldPoint(
+            pathEndpoint.getX() - 4, 
+            pathEndpoint.getY() - 4, 
+            pathEndpoint.getPlane()
+        );
+        WorldArea pathArea = new WorldArea(pathSouthWest, 8, 8);
+        
+        WorldPoint destSouthWest = new WorldPoint(
+            destination.getX() - 4, 
+            destination.getY() - 4, 
+            destination.getPlane()
+        );
+        WorldArea objectArea = new WorldArea(destSouthWest, 8, 8);
+        
         if (!pathArea.intersectsWith2D(objectArea)) {
             return Integer.MAX_VALUE;
         }
@@ -634,7 +656,15 @@ public class Rs2Walker {
     public static boolean canReach(WorldPoint worldPoint, int sizeX, int sizeY, int pathSizeX, int pathSizeY,boolean useBankedItems) {
         boolean originalUseBankItems = ShortestPathPlugin.getPathfinderConfig().isUseBankItems();
         WorldArea pathArea = null;
-        WorldArea objectArea = new WorldArea(worldPoint, sizeX + 2, sizeY + 2);
+        
+        // Create centered WorldArea for the object instead of corner-based
+        WorldPoint objectSouthWest = new WorldPoint(
+            worldPoint.getX() - (sizeX + 2) / 2, 
+            worldPoint.getY() - (sizeY + 2) / 2, 
+            worldPoint.getPlane()
+        );
+        WorldArea objectArea = new WorldArea(objectSouthWest, sizeX + 2, sizeY + 2);
+        
         try {                            
             ShortestPathPlugin.getPathfinderConfig().setUseBankItems(useBankedItems);
             ShortestPathPlugin.getPathfinderConfig().refresh(worldPoint);
@@ -643,7 +673,15 @@ public class Rs2Walker {
             }
             Pathfinder pathfinder = new Pathfinder(ShortestPathPlugin.getPathfinderConfig(), Rs2Player.getWorldLocation(), worldPoint);
             pathfinder.run();            
-            pathArea = new WorldArea(pathfinder.getPath().get(pathfinder.getPath().size() - 1), pathSizeX, pathSizeY);                       
+            
+            // Create centered WorldArea for the path endpoint instead of corner-based
+            WorldPoint pathEndpoint = pathfinder.getPath().get(pathfinder.getPath().size() - 1);
+            WorldPoint pathSouthWest = new WorldPoint(
+                pathEndpoint.getX() - pathSizeX / 2, 
+                pathEndpoint.getY() - pathSizeY / 2, 
+                pathEndpoint.getPlane()
+            );
+            pathArea = new WorldArea(pathSouthWest, pathSizeX, pathSizeY);                       
         } catch (Exception e) {
             Microbot.logStackTrace("Rs2Walker", e);
             return false;
@@ -651,8 +689,7 @@ public class Rs2Walker {
             ShortestPathPlugin.getPathfinderConfig().setUseBankItems(originalUseBankItems);
             ShortestPathPlugin.getPathfinderConfig().refresh(worldPoint);
         }
-        return pathArea != null ? pathArea
-                .intersectsWith2D(objectArea): false;
+        return pathArea != null ? pathArea.intersectsWith2D(objectArea) : false;
     }
     public static boolean canReach(WorldPoint worldPoint, int sizeX, int sizeY, int pathSizeX, int pathSizeY) {
         return canReach(worldPoint, sizeX, sizeY, pathSizeX, pathSizeY, false);
@@ -1081,13 +1118,11 @@ public class Rs2Walker {
         if (!isInDialogue) return true;
 
         // Skip over first door dialogue & don't forget to set up two-factor warning
-        if (Rs2Dialogue.getDialogueText() != null) {
-            if (Rs2Dialogue.getDialogueText().contains("two-factor authentication options") || Rs2Dialogue.getDialogueText().contains("Hopefully you will learn<br>much from us.")) {
-                Rs2Dialogue.sleepUntilHasContinue();
-                sleepUntil(() -> !Rs2Dialogue.hasContinue() || Rs2Dialogue.getDialogueText().contains("To pass you must answer me"), Rs2Dialogue::clickContinue, 5000, Rs2Random.between(600, 800));
-                if (!Rs2Dialogue.isInDialogue()) return true;
-            }
-        }
+		if (Rs2Dialogue.getDialogueText().toLowerCase().contains("two-factor authentication options") || Rs2Dialogue.getDialogueText().toLowerCase().contains("hopefully you will learn<br>much from us.")) {
+			Rs2Dialogue.sleepUntilHasContinue();
+			sleepUntil(() -> !Rs2Dialogue.hasContinue() || Rs2Dialogue.getDialogueText().toLowerCase().contains("to pass you must answer me"), Rs2Dialogue::clickContinue, 5000, Rs2Random.between(600, 800));
+			if (!Rs2Dialogue.isInDialogue()) return true;
+		}
 
         String dialogueAnswer = null;
         int attempts = 0;
@@ -1373,13 +1408,7 @@ public class Rs2Walker {
                             if (Rs2Npc.canWalkTo(npc, 20) && Rs2Npc.interact(npc, transport.getAction())) {
                                 Rs2Player.waitForWalking();
                                 sleepUntil(Rs2Dialogue::isInDialogue,600*2);
-                                if (Rs2Dialogue.hasDialogueText("will cost you")){
-                                    Rs2Dialogue.clickContinue();
-                                    sleepUntil(Rs2Dialogue::hasSelectAnOption,600*3);
-                                    Rs2Dialogue.clickOption("Yes please.");
-                                    sleepUntil(Rs2Dialogue::hasContinue,600*3);
-                                    Rs2Dialogue.clickContinue();
-                                } else if (Rs2Dialogue.clickOption("I'm just going to Pirates' cove")){
+								if (Rs2Dialogue.clickOption("I'm just going to Pirates' cove")){
 									sleep(600 * 2);
 									Rs2Dialogue.clickContinue();
                                 } else if (Objects.equals(transport.getName(), "Mountain Guide")) {
@@ -1566,8 +1595,7 @@ public class Rs2Walker {
         // Handle Ferox Encalve Barrier
         if (tileObject.getId() == ObjectID.WILDY_HUB_ENTRY_BARRIER || tileObject.getId() == ObjectID.WILDY_HUB_ENTRY_BARRIER_M) {
             if (Rs2Dialogue.isInDialogue()) {
-                if (Rs2Dialogue.getDialogueText() == null) return false;
-                if (Rs2Dialogue.getDialogueText().contains("When returning to the Enclave")) {
+                if (Rs2Dialogue.getDialogueText().toLowerCase().contains("when returning to the enclave")) {
                     Rs2Dialogue.clickContinue();
                     Rs2Dialogue.sleepUntilSelectAnOption();
                     Rs2Dialogue.keyPressForDialogueOption("Yes, and don't ask again.");
@@ -2272,15 +2300,15 @@ public class Rs2Walker {
                 lowerCaseItemName.contains("digsite pendant") ||
                 lowerCaseItemName.contains("necklace of passage") ||
                 lowerCaseItemName.contains("camulet") ||
-                lowerCaseItemName.contains("burning amulet")) {
+                lowerCaseItemName.contains("burning amulet") ||
+				lowerCaseItemName.contains("giantsoul amulet")) {
             return 6;
         } else if (lowerCaseItemName.contains("xeric's talisman") ||
                 lowerCaseItemName.contains("slayer ring") ||
 				lowerCaseItemName.contains("construct. cape") ||
 				lowerCaseItemName.contains("pendant of ates")) {
             return 4;
-        } else if (lowerCaseItemName.contains("book of the dead") ||
-                   lowerCaseItemName.contains("giantsoul amulet")) {
+        } else if (lowerCaseItemName.contains("book of the dead")) {
             return 3;
         } else if (lowerCaseItemName.contains("kharedst's memoirs") ||
 			       lowerCaseItemName.contains("enchanted lyre")) {

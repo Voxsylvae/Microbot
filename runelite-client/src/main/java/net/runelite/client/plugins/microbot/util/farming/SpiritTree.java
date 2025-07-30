@@ -174,6 +174,8 @@ public enum SpiritTree {
             85, // Requires 85 Farming for the Farming Guild
             VarbitID.FARMING_TRANSMIT_A, // Farming Guild spirit tree patch
             ObjectID.FARMING_SPIRIT_TREE_PATCH_5, // Spirit patch id when fully grown  and available for travel -> healty , for states between there are other ids
+            ObjectID.SPIRIT_TREE_FULLYGROWN, // Standard spirit patch id when fully grown  and available for travel -> healty , for states between there are other ids
+
 			new int[] {4922, 5177, 5178, 5179, 4921, 4923, 4665, 4666, 4667},
             "B: Farming Guild"
     );
@@ -196,7 +198,7 @@ public enum SpiritTree {
     private final int requiredFarmingLevel;
     private final int varbitId; // -1 for built-in trees
     private final int objectId;
-	private final int[] regionIds; // -1 for built-in trees
+	  private final int[] regionIds; 
     private final String adventureLogDisplayName;
 
     /**

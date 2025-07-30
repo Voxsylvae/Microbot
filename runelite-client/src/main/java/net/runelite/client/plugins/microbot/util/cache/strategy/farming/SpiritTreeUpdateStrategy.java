@@ -149,10 +149,12 @@ public class SpiritTreeUpdateStrategy implements CacheUpdateStrategy<SpiritTree,
     /**
      * Update cache from spirit tree widget data
      */
+
 	private void updateCacheFromWidget(CacheOperations<SpiritTree, SpiritTreeData> cache) {
 		try {
 			// Extract available destinations from the widget
 			List<SpiritTree> availableSpiritTrees = SpiritTree.extractAvailableFromWidget();
+
 
 			WorldPoint playerLocation = getPlayerLocation();
 			Integer farmingLevel = getFarmingLevel();
@@ -291,6 +293,50 @@ public class SpiritTreeUpdateStrategy implements CacheUpdateStrategy<SpiritTree,
     }
     
     /**
+     * Update patches that are no longer available based on widget data
+     */
+    private void updateSpiritTreesFromWidget(CacheOperations<SpiritTree, SpiritTreeData> cache,
+                                                   List<SpiritTree> detectedAvailableWidgetSpiritTrees,
+                                                   WorldPoint playerLocation, Integer farmingLevel) {
+        // Check all patches to see if any are missing from the widget but were previously available
+        for (SpiritTree spiritTree : SpiritTree.values()) {
+            CropState currentState = spiritTree.getPatchState();
+            boolean availableForTravel = spiritTree.isAvailableForTravel();
+            SpiritTreeData existingData = cache.get(spiritTree);
+            if (!detectedAvailableWidgetSpiritTrees.contains(spiritTree)) {                                                                                 
+                // If we had this as available before, mark it as unavailable
+                SpiritTreeData newData = new SpiritTreeData(
+                            spiritTree,
+                            currentState,
+                            false, // Not available for travel anymore
+                            playerLocation,
+                            false, // Not detected via widget
+                            false, // Not detected via game object
+                            farmingLevel
+                    );            
+                cache.put(spiritTree, newData); 
+                log.info("Updated spirit tree {} to unavailable (not found in widget), is available for travel: {}, crop state: {}", 
+                          spiritTree.name(), availableForTravel, currentState);
+            }else{
+                SpiritTreeData newData  = new SpiritTreeData(
+                            spiritTree,
+                            currentState,
+                            true && spiritTree.hasQuestRequirements(), 
+                            playerLocation,
+                            false, // Not detected via widget
+                            false, // Not detected via game object
+                            farmingLevel
+                    );            
+            
+                cache.put(spiritTree, newData);
+                log.info("Updated spirit tree {} to available (found in widget), is available for travel: {}, crop state: {}", 
+                          spiritTree.name(), availableForTravel, currentState);           
+            }
+        }
+    }
+    
+    /**
+
      * Find spirit tree spiritTree by object location
      */
     private SpiritTree findPatchByLocation(WorldPoint objectLocation) {

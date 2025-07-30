@@ -248,9 +248,9 @@ public class PathfinderConfig {
         usableTeleports.clear();
          // Check spirit tree farming states for farmable spirit trees
 
-        Rs2SpiritTreeCache.getInstance().update();
-        
-        Microbot.getClientThread().runOnClientThreadOptional(() -> {
+
+        Rs2SpiritTreeCache.getInstance().update();        
+        Microbot.getClientThread().runOnClientThradOptional(() -> {
             for (Map.Entry<WorldPoint, Set<Transport>> entry : allTransports.entrySet()) {
                 for (Transport transport : entry.getValue()) {
                     for (Quest quest : transport.getQuests()) {
